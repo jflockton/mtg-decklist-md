@@ -298,12 +298,22 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
     fm_prices["usd"] = totals["usd"]
     fm_prices["tix"] = totals["tix"]
     price_frontmatter = "\n".join(f"price-{k}: {v:.2f}" for k, v in fm_prices.items())
+    def card_gbp(eur, usd):
+        # Prefer the Cardmarket EUR price; fall back to USD if only that exists
+        if not rates:
+            return None
+        if eur is not None:
+            return eur * rates["eur_gbp"]
+        if usd is not None:
+            return usd * rates["usd_gbp"]
+        return None
+
     top_rows = "\n".join(
-        f"| {name} | {money(eur, usd)[0]} | {money(eur, usd)[1]} |"
+        f"| {name} | {money(eur, usd)[0]} | {money(eur, usd)[1]} | {gbp_cell(card_gbp(eur, usd))} |"
         for name, eur, usd in report["top"]
     )
     all_rows = "\n".join(
-        f"| {name}{f' ×{qty}' if qty > 1 else ''} | {money(eur, usd)[0]} | {money(eur, usd)[1]} |"
+        f"| {name}{f' ×{qty}' if qty > 1 else ''} | {money(eur, usd)[0]} | {money(eur, usd)[1]} | {gbp_cell(card_gbp(eur, usd))} |"
         for qty, name, eur, usd in report["all"]
     )
     unpriced_note = (
@@ -355,16 +365,16 @@ price-date: {today}
 
 ## 🏆 Priciest Cards
 
-| Card | EUR | USD |
-|------|----:|----:|
+| Card | EUR | USD | ≈ GBP |
+|------|----:|----:|------:|
 {top_rows}
 
 ### 💵 All Card Prices
 
 Per-card prices (×N marks multiples — basics etc.; the price shown is per copy).
 
-| Card | EUR | USD |
-|------|----:|----:|
+| Card | EUR | USD | ≈ GBP |
+|------|----:|----:|------:|
 {all_rows}
 {unpriced_note}
 ## 📜 Deck List
