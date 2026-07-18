@@ -341,7 +341,7 @@ price-date: {today}
 
 *💰 Standard (non-foil) cards, Scryfall daily snapshot ({today}). ≈ GBP is rough — ECB reference rates via frankfurter.dev; 1 tix ≈ $1.*
 
-![[{image_filename}]]
+![[{image_filename}|290]]
 
 ## 🧠 First Impressions
 
