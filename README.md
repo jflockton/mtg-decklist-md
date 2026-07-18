@@ -28,6 +28,19 @@ still come from Scryfall as normal.
 🛡️ An existing deck note is **never overwritten** (your review notes live in
 it) — pass `--force` to regenerate one anyway.
 
+## 🗃️ Your collection & the shopping list
+
+Keep a `_Collection.md` in the output folder (or point `COLLECTION_FILE` in
+`.env` somewhere else) listing the cards you own — one `N Card Name` per
+line, same format as a deck list; headings and prose are ignored so it can be
+a normal Obsidian note. When it exists, every imported deck note gains a
+**🛒 Cards to Buy** section: how many of the deck's cards you already own,
+the cards you're missing (quantity-aware — owning 10 Mountains against a
+23-Mountain deck means you need 13 more), per-card prices, and the total
+cost to complete the deck in EUR / USD / ≈ GBP. The owned count and buy
+totals also land in the frontmatter (`owned`, `buy-eur`, `buy-gbp`) for
+Dataview. No collection file? The section is simply skipped.
+
 ## 📦 What you get
 
 Two files in your configured vault folder:

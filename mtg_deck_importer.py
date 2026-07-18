@@ -48,6 +48,50 @@ MOXFIELD_API = "https://api2.moxfield.com/v3/decks/all/{deck_id}"
 ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
 
 
+def load_collection(out_dir: Path) -> tuple[str, dict[str, int]] | None:
+    """Owned cards from _Collection.md next to the deck notes (override with
+    COLLECTION_FILE in .env). Only 'N Card Name' lines count — headings,
+    prose, and blank lines are ignored, so the file can be a normal note.
+    Returns (file name, {lowercased name: owned qty}) or None if absent.
+    """
+    path = Path(os.environ.get("COLLECTION_FILE") or out_dir / "_Collection.md")
+    if not path.is_file():
+        return None
+    owned: dict[str, int] = {}
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        m = re.match(r"(\d+)[xX]?\s+(.+)", line.strip())
+        if m:
+            name = m.group(2).strip().lower()
+            owned[name] = owned.get(name, 0) + int(m.group(1))
+    return path.name, owned
+
+
+def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
+               prices: dict[str, dict]) -> dict:
+    """Which deck cards are missing from the collection, and what the gap
+    costs (per-source totals use the already-fetched deck prices).
+    """
+    missing = []
+    totals = {"eur": 0.0, "usd": 0.0}
+    owned_unique = owned_copies = total_copies = 0
+    for qty, name in decklist:
+        total_copies += qty
+        have = min(owned.get(name.lower(), 0), qty)
+        owned_copies += have
+        if have >= qty:
+            owned_unique += 1
+            continue
+        need = qty - have
+        p = prices.get(name.lower()) or {}
+        totals["eur"] += (p.get("eur") or 0) * need
+        totals["usd"] += (p.get("usd") or 0) * need
+        missing.append((need, name, p.get("eur"), p.get("usd")))
+    missing.sort(key=lambda c: c[2] or 0, reverse=True)
+    return {"missing": missing, "totals": totals,
+            "owned_unique": owned_unique, "owned_copies": owned_copies,
+            "unique": len(decklist), "total_copies": total_copies}
+
+
 def output_dir() -> Path:
     # .env sits next to the script; a real environment variable wins over it
     load_dotenv(SCRIPT_DIR / ".env")
@@ -298,7 +342,8 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
 
 
 def build_note(deck: dict, decklist: list[tuple[int, str]],
-               image_url: str, deck_url: str, report: dict) -> str:
+               image_url: str, deck_url: str, report: dict,
+               buy: dict | None, collection_name: str | None) -> str:
     today = date.today().isoformat()
     commander_line = ", ".join(deck["commanders"])
     listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
@@ -335,6 +380,7 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
     fm_prices["usd"] = totals["usd"]
     fm_prices["tix"] = totals["tix"]
     price_frontmatter = "\n".join(f"price-{k}: {v:.2f}" for k, v in fm_prices.items())
+
     def card_gbp(eur, usd):
         # Prefer the Cardmarket EUR price; fall back to USD if only that exists
         if not rates:
@@ -357,6 +403,40 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
         f"\n> ⚠️ No price found for {len(report['unpriced'])} card(s): "
         + ", ".join(report["unpriced"]) if report["unpriced"] else ""
     )
+
+    buy_section = ""
+    if buy is not None:
+        summary = (f"Compared against `{collection_name}` — you own "
+                   f"**{buy['owned_unique']}/{buy['unique']}** cards "
+                   f"({buy['owned_copies']}/{buy['total_copies']} copies).")
+        if buy["missing"]:
+            buy_gbp = gbp_cell(buy["totals"]["eur"] * rates["eur_gbp"] if rates else None)
+            buy_rows = "\n".join(
+                f"| {name} | {need} | {money(eur, usd)[0]} | {money(eur, usd)[1]} | {gbp_cell(card_gbp(eur, usd))} |"
+                for need, name, eur, usd in buy["missing"]
+            )
+            buy_section = f"""## 🛒 Cards to Buy
+
+{summary}
+Completing the deck ≈ **€{buy["totals"]["eur"]:,.2f} · ${buy["totals"]["usd"]:,.2f} · {buy_gbp}** (prices per copy below).
+
+| Card | Need | EUR | USD | ≈ GBP |
+|------|-----:|----:|----:|------:|
+{buy_rows}
+
+"""
+        else:
+            buy_section = f"""## 🛒 Cards to Buy
+
+{summary}
+🎉 **You own every card in this deck — nothing to buy!**
+
+"""
+        price_frontmatter += f"\nowned: {buy['owned_unique']}/{buy['unique']}"
+        price_frontmatter += f"\nbuy-eur: {buy['totals']['eur']:.2f}"
+        if rates:
+            price_frontmatter += f"\nbuy-gbp: {buy['totals']['eur'] * rates['eur_gbp']:.2f}"
+
     return f"""---
 tags: [mtg, deck, commander]
 created: {today}
@@ -400,7 +480,7 @@ price-date: {today}
 
 -
 
-## 🏆 Priciest Cards
+{buy_section}## 🏆 Priciest Cards
 
 | Card | EUR | USD | ≈ GBP |
 |------|----:|----:|------:|
@@ -452,10 +532,17 @@ def main() -> None:
     image_path = attachments_dir / f"{stem}.jpg"
     image_url = fetch_commander_art(primary, image_path)
 
-    report = price_report(decklist, fetch_prices([name for _, name in decklist]))
+    prices = fetch_prices([name for _, name in decklist])
+    report = price_report(decklist, prices)
+
+    collection = load_collection(out_dir)
+    collection_name, buy = None, None
+    if collection:
+        collection_name, owned = collection
+        buy = buy_report(decklist, owned, prices)
 
     note_path.write_text(
-        build_note(deck, decklist, image_url, deck_url, report),
+        build_note(deck, decklist, image_url, deck_url, report, buy, collection_name),
         encoding="utf-8",
     )
 
@@ -469,6 +556,11 @@ def main() -> None:
     print(f"Value:     ~EUR {totals['eur']:,.2f}{gbp} / USD {totals['usd']:,.2f}"
           f" / TIX {totals['tix']:,.2f}"
           + (f"  ({len(report['unpriced'])} unpriced)" if report["unpriced"] else ""))
+    if buy is not None:
+        print(f"Owned:     {buy['owned_unique']}/{buy['unique']} cards"
+              f" — to buy: {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f})")
+    else:
+        print("Owned:     no _Collection.md found — skipped the Cards to Buy section")
     print(f"Note:      {note_path}")
     print(f"Artwork:   {image_path}")
 
