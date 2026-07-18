@@ -162,8 +162,9 @@ def fetch_commander_art(commander: str, dest: Path) -> None:
 
 
 def fetch_prices(names: list[str]) -> dict[str, dict]:
-    """Daily market prices via Scryfall: EUR = Cardmarket, USD = TCGPlayer.
-    Returns {lowercased card name: {"eur": float|None, "usd": float|None}}.
+    """Daily market prices via Scryfall, always for the standard (non-foil)
+    card: EUR = Cardmarket, USD = TCGPlayer, TIX = Cardhoarder (MTGO).
+    Returns {lowercased card name: {"eur"|"usd"|"tix": float|None}}.
     """
     prices: dict[str, dict] = {}
     for i in range(0, len(names), 75):  # collection endpoint caps at 75 cards
@@ -179,6 +180,7 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
             entry = {
                 "eur": float(p["eur"]) if p.get("eur") else None,
                 "usd": float(p["usd"]) if p.get("usd") else None,
+                "tix": float(p["tix"]) if p.get("tix") else None,
             }
             prices[card["name"].lower()] = entry
             # Let a front-face name find its double-faced card
@@ -195,6 +197,7 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
             continue
         cheap = cheapest_paper_printing(name)
         if cheap:
+            cheap["tix"] = entry["tix"] if entry else None
             prices[name.lower()] = cheap
         time.sleep(0.1)
     return prices
@@ -217,7 +220,8 @@ def cheapest_paper_printing(name: str) -> dict | None:
 
 
 def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> dict:
-    totals = {"eur": 0.0, "usd": 0.0}
+    totals = {"eur": 0.0, "usd": 0.0, "tix": 0.0}
+    coverage = {"eur": 0, "usd": 0, "tix": 0}
     unpriced = []
     priced_cards = []
     for qty, name in decklist:
@@ -225,11 +229,14 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
         if not p or (p["eur"] is None and p["usd"] is None):
             unpriced.append(name)
             continue
-        totals["eur"] += (p["eur"] or 0) * qty
-        totals["usd"] += (p["usd"] or 0) * qty
+        for src in totals:
+            if p.get(src) is not None:
+                totals[src] += p[src] * qty
+                coverage[src] += 1
         priced_cards.append((name, p["eur"], p["usd"]))
     top = sorted(priced_cards, key=lambda c: c[1] or 0, reverse=True)[:10]
-    return {"totals": totals, "top": top, "unpriced": unpriced}
+    return {"totals": totals, "coverage": coverage, "unique": len(decklist),
+            "top": top, "unpriced": unpriced}
 
 
 def build_note(deck: dict, decklist: list[tuple[int, str]],
@@ -238,6 +245,8 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
     commander_line = ", ".join(deck["commanders"])
     listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
     totals = report["totals"]
+    coverage = report["coverage"]
+    unique = report["unique"]
 
     def money(eur, usd):
         e = f"€{eur:,.2f}" if eur is not None else "—"
@@ -245,6 +254,14 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
         return e, u
 
     te, tu = money(totals["eur"], totals["usd"])
+    value_rows = "\n".join(
+        f"| {label} | {sym}{totals[src]:,.2f} | {coverage[src]}/{unique} |"
+        for src, label, sym in [
+            ("eur", "🇪🇺 Cardmarket (EUR)", "€"),
+            ("usd", "🇺🇸 TCGPlayer (USD)", "$"),
+            ("tix", "🖥️ Cardhoarder (MTGO tix)", ""),
+        ]
+    )
     top_rows = "\n".join(
         f"| {name} | {money(eur, usd)[0]} | {money(eur, usd)[1]} |"
         for name, eur, usd in report["top"]
@@ -260,6 +277,7 @@ commander: {commander_line}
 deck-url: {deck_url}
 price-eur: {totals["eur"]:.2f}
 price-usd: {totals["usd"]:.2f}
+price-tix: {totals["tix"]:.2f}
 price-date: {today}
 ---
 
@@ -268,7 +286,7 @@ price-date: {today}
 **Commander:** {commander_line}
 **Format:** {deck["format"]}
 **Source:** [{deck["source"]}]({deck_url})
-**Value:** 💰 ≈ {te} · {tu} — Scryfall daily prices ({today}); EUR = Cardmarket, USD = TCGPlayer
+**Value:** 💰 ≈ {te} · {tu} — standard (non-foil) cards, Scryfall daily prices ({today})
 
 ![[{image_filename}]]
 
@@ -292,7 +310,15 @@ price-date: {today}
 
 -
 
-## 💰 Priciest Cards
+## 💰 Deck Value
+
+Standard (non-foil) card prices, via Scryfall's daily snapshot ({today}).
+
+| Source | Value | Cards priced |
+|--------|------:|-------------:|
+{value_rows}
+
+### 🏆 Priciest Cards
 
 | Card | EUR | USD |
 |------|----:|----:|
@@ -349,6 +375,7 @@ def main() -> None:
     print(f"Commander: {', '.join(deck['commanders'])}")
     print(f"Cards:     {total} ({len(decklist)} unique)")
     print(f"Value:     ~EUR {totals['eur']:,.2f} / USD {totals['usd']:,.2f}"
+          f" / TIX {totals['tix']:,.2f}"
           + (f"  ({len(report['unpriced'])} unpriced)" if report["unpriced"] else ""))
     print(f"Note:      {note_path}")
     print(f"Artwork:   {image_path}")

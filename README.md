@@ -30,8 +30,9 @@ Two files in your configured vault folder:
   - 🧠 **First Impressions** · 💪 **Strengths** · ⚠️ **Weaknesses** ·
     🔄 **Cards to Consider Swapping** · 📝 **Play Notes** — empty headings
     ready for your review
-  - 💰 **deck value + Priciest Cards** — total EUR/USD value (also in the
-    frontmatter for Dataview) and a top-10 table of the most expensive cards
+  - 💰 **Deck Value + Priciest Cards** — totals from three price sources
+    (also in the frontmatter for Dataview) and a top-10 table of the most
+    expensive cards
   - 📜 **Deck List** — commander first, then mainboard alphabetically, one
     `1 Card Name` per line (pastes straight back into Moxfield / Arena)
 - 🎨 `Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg` — the commander card
@@ -52,12 +53,21 @@ which needs no browser (just polite `User-Agent`/`Accept` headers).
 
 ## 💰 Where do the prices come from?
 
-Scryfall's daily market prices: **EUR = Cardmarket**, **USD = TCGPlayer**.
+Scryfall's daily price snapshot, always for the **standard (non-foil) card**,
+totalled per source in the note's Deck Value table:
+
+| Source | Currency | Market |
+|--------|----------|--------|
+| 🇪🇺 [Cardmarket](https://www.cardmarket.com/en/Magic) | EUR | European paper singles |
+| 🇺🇸 [TCGPlayer](https://www.tcgplayer.com) | USD | US paper singles |
+| 🖥️ [Cardhoarder](https://www.cardhoarder.com) | TIX | Magic Online |
+
 There's no reliable GBP source (and no, not eBay — auction listings aren't a
 price index 😄). Most cards are priced in one bulk lookup; when Scryfall's
 default printing is an online-only set with no paper price (it happens — e.g.
 Tempest Remastered Mox Diamond), the app falls back to the **cheapest paper
-printing**. Treat the total as a fair estimate, not a valuation.
+printing**. Each row shows how many of the deck's cards that source actually
+priced. Treat the totals as fair estimates, not valuations.
 
 ## 🚀 Setup
 
