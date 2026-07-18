@@ -30,9 +30,10 @@ Two files in your configured vault folder:
   - 🧠 **First Impressions** · 💪 **Strengths** · ⚠️ **Weaknesses** ·
     🔄 **Cards to Consider Swapping** · 📝 **Play Notes** — empty headings
     ready for your review
-  - 💰 **Deck Value + card prices** — four value estimates (EUR / GBP /
-    USD / TIX, also in the frontmatter for Dataview), a top-10 Priciest
-    Cards table, and a full per-card price table sorted dearest-first
+  - 💰 **Deck Value + card prices** — deck totals per source with a ≈ GBP
+    column (also in the frontmatter for Dataview), a top-10 Priciest Cards
+    table, and a full per-card price table sorted dearest-first — every
+    price table shows native EUR / USD plus ≈ GBP
   - 📜 **Deck List** — commander first, then mainboard alphabetically, one
     `1 Card Name` per line (pastes straight back into Moxfield / Arena)
 - 🎨 `Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg` — the commander card
@@ -62,9 +63,9 @@ totalled into four estimates shown right under the note's Source line:
 | 🇺🇸 [TCGPlayer](https://www.tcgplayer.com) | USD | US paper singles |
 | 🖥️ [Cardhoarder](https://www.cardhoarder.com) | tix | Magic Online (1 tix ≈ $1) |
 
-Every row also gets a **≈ GBP column** — EUR/USD converted at the ECB
-reference rates ([frankfurter.dev](https://frankfurter.dev)), tix via the
-~$1 convention. (Scryfall itself isn't a marketplace — it's the aggregator
+Every row — and every card in the Priciest Cards / All Card Prices tables —
+also gets a **≈ GBP column**: EUR/USD converted at the ECB reference rates
+([frankfurter.dev](https://frankfurter.dev)), tix via the ~$1 convention. (Scryfall itself isn't a marketplace — it's the aggregator
 all these numbers come from. If the exchange-rate API is unreachable, the
 GBP cells show a dash.)
 
