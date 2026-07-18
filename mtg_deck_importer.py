@@ -220,13 +220,17 @@ def cheapest_paper_printing(name: str) -> dict | None:
     return {"eur": min(eurs) if eurs else None, "usd": min(usds) if usds else None}
 
 
-def eur_to_gbp_rate() -> float | None:
-    """Current ECB reference rate via frankfurter.dev; None if unreachable."""
+def fx_rates() -> dict | None:
+    """Current ECB reference rates via frankfurter.dev: EUR→GBP and USD→GBP
+    (derived through EUR). None if the rate API is unreachable.
+    """
     try:
-        r = requests.get(ECB_RATES, params={"base": "EUR", "symbols": "GBP"},
+        r = requests.get(ECB_RATES, params={"base": "EUR", "symbols": "GBP,USD"},
                          headers=HTTP_HEADERS, timeout=15)
         r.raise_for_status()
-        return float(r.json()["rates"]["GBP"])
+        rates = r.json()["rates"]
+        return {"eur_gbp": float(rates["GBP"]),
+                "usd_gbp": float(rates["GBP"]) / float(rates["USD"])}
     except Exception:
         return None
 
@@ -251,12 +255,9 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
         all_cards.append((qty, name, p["eur"], p["usd"]))
     top = sorted(priced_cards, key=lambda c: c[1] or 0, reverse=True)[:10]
     all_cards.sort(key=lambda c: c[2] or 0, reverse=True)
-    rate = eur_to_gbp_rate()
-    if rate is not None:
-        totals["gbp"] = totals["eur"] * rate
-        coverage["gbp"] = coverage["eur"]
     return {"totals": totals, "coverage": coverage, "unique": len(decklist),
-            "top": top, "all": all_cards, "unpriced": unpriced}
+            "top": top, "all": all_cards, "unpriced": unpriced,
+            "rates": fx_rates()}
 
 
 def build_note(deck: dict, decklist: list[tuple[int, str]],
@@ -273,19 +274,30 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
         u = f"${usd:,.2f}" if usd is not None else "—"
         return e, u
 
+    rates = report["rates"]
+
+    def gbp_cell(amount):
+        return f"£{amount:,.2f}" if amount is not None else "—"
+
+    # tix trade at roughly $1 each on MTGO, so they convert via the USD rate
+    source_rows = [
+        ("🇪🇺 Cardmarket", f"€{totals['eur']:,.2f}",
+         totals["eur"] * rates["eur_gbp"] if rates else None, coverage["eur"]),
+        ("🇺🇸 TCGPlayer", f"${totals['usd']:,.2f}",
+         totals["usd"] * rates["usd_gbp"] if rates else None, coverage["usd"]),
+        ("🖥️ Cardhoarder (MTGO)", f"{totals['tix']:,.2f} tix",
+         totals["tix"] * rates["usd_gbp"] if rates else None, coverage["tix"]),
+    ]
     value_rows = "\n".join(
-        f"| {label} | {sym}{totals[src]:,.2f} | {coverage[src]}/{unique} |"
-        for src, label, sym in [
-            ("eur", "🇪🇺 Cardmarket (EUR)", "€"),
-            ("gbp", "💷 GBP estimate (Cardmarket EUR → £, ECB rate)", "£"),
-            ("usd", "🇺🇸 TCGPlayer (USD)", "$"),
-            ("tix", "🖥️ Cardhoarder (MTGO tix)", ""),
-        ] if src in totals
+        f"| {label} | {native} | {gbp_cell(gbp)} | {cov}/{unique} |"
+        for label, native, gbp, cov in source_rows
     )
-    price_frontmatter = "\n".join(
-        f"price-{src}: {totals[src]:.2f}"
-        for src in ("eur", "gbp", "usd", "tix") if src in totals
-    )
+    fm_prices = {"eur": totals["eur"]}
+    if rates:
+        fm_prices["gbp"] = totals["eur"] * rates["eur_gbp"]
+    fm_prices["usd"] = totals["usd"]
+    fm_prices["tix"] = totals["tix"]
+    price_frontmatter = "\n".join(f"price-{k}: {v:.2f}" for k, v in fm_prices.items())
     top_rows = "\n".join(
         f"| {name} | {money(eur, usd)[0]} | {money(eur, usd)[1]} |"
         for name, eur, usd in report["top"]
@@ -313,11 +325,11 @@ price-date: {today}
 **Format:** {deck["format"]}
 **Source:** [{deck["source"]}]({deck_url})
 
-| Source | Value | Cards priced |
-|--------|------:|-------------:|
+| Source | Value | ≈ GBP | Cards priced |
+|--------|------:|------:|-------------:|
 {value_rows}
 
-*💰 Standard (non-foil) cards, Scryfall daily snapshot ({today}).*
+*💰 Standard (non-foil) cards, Scryfall daily snapshot ({today}). ≈ GBP is rough — ECB reference rates via frankfurter.dev; 1 tix ≈ $1.*
 
 ![[{image_filename}]]
 
@@ -405,7 +417,8 @@ def main() -> None:
     print(f"Deck:      {deck['name']}")
     print(f"Commander: {', '.join(deck['commanders'])}")
     print(f"Cards:     {total} ({len(decklist)} unique)")
-    gbp = f" / GBP {totals['gbp']:,.2f}" if "gbp" in totals else ""
+    rates = report["rates"]
+    gbp = f" / GBP {totals['eur'] * rates['eur_gbp']:,.2f}" if rates else ""
     print(f"Value:     ~EUR {totals['eur']:,.2f}{gbp} / USD {totals['usd']:,.2f}"
           f" / TIX {totals['tix']:,.2f}"
           + (f"  ({len(report['unpriced'])} unpriced)" if report["unpriced"] else ""))

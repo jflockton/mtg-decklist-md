@@ -59,12 +59,14 @@ totalled into four estimates shown right under the note's Source line:
 | Source | Currency | Market |
 |--------|----------|--------|
 | 🇪🇺 [Cardmarket](https://www.cardmarket.com/en/Magic) | EUR | European paper singles |
-| 💷 GBP estimate | GBP | Cardmarket EUR × the ECB reference rate ([frankfurter.dev](https://frankfurter.dev)) |
 | 🇺🇸 [TCGPlayer](https://www.tcgplayer.com) | USD | US paper singles |
-| 🖥️ [Cardhoarder](https://www.cardhoarder.com) | TIX | Magic Online |
+| 🖥️ [Cardhoarder](https://www.cardhoarder.com) | tix | Magic Online (1 tix ≈ $1) |
 
-(Scryfall itself isn't a marketplace — it's the aggregator all these numbers
-come from. If the exchange-rate API is unreachable, the GBP row is skipped.)
+Every row also gets a **≈ GBP column** — EUR/USD converted at the ECB
+reference rates ([frankfurter.dev](https://frankfurter.dev)), tix via the
+~$1 convention. (Scryfall itself isn't a marketplace — it's the aggregator
+all these numbers come from. If the exchange-rate API is unreachable, the
+GBP cells show a dash.)
 
 There's no reliable GBP source (and no, not eBay — auction listings aren't a
 price index 😄). Most cards are priced in one bulk lookup; when Scryfall's
