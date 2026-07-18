@@ -78,7 +78,7 @@ def board_cards(deck: dict, board: str) -> list[tuple[int, str]]:
 def fetch_commander_art(commander: str, dest: Path) -> None:
     # Scryfall rejects requests without proper User-Agent/Accept headers
     headers = {
-        "User-Agent": "mtg-deck-importer/1.0 (personal Obsidian tool)",
+        "User-Agent": "mtg-decklist-md/1.0 (personal Obsidian tool)",
         "Accept": "*/*",
     }
     r = requests.get(SCRYFALL_NAMED, params={"exact": commander}, headers=headers, timeout=30)
