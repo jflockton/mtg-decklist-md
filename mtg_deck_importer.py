@@ -9,14 +9,16 @@ pass --force to regenerate it anyway.
 
 Fetches the deck list (Moxfield via a headed browser because of Cloudflare;
 EDHREC via plain HTTP), downloads the commander's artwork from Scryfall, and
-writes a markdown deck note into the Obsidian vault folder configured in
-config.json.
+writes a markdown deck note into the Obsidian vault folder set by the
+VAULT_OUTPUT_DIR environment variable (usually via a .env file next to this
+script — see .env.example).
 
 Output note:  YYYY-MM-DD_MTG_<Commander Name>.md
 Output image: Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg
 """
 
 import json
+import os
 import re
 import sys
 import time
@@ -24,9 +26,9 @@ from datetime import date
 from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
 
 SCRIPT_DIR = Path(__file__).parent
-CONFIG_PATH = SCRIPT_DIR / "config.json"
 
 USER_AGENT = "mtg-decklist-md/1.0 (personal Obsidian tool)"
 HTTP_HEADERS = {"User-Agent": USER_AGENT, "Accept": "*/*"}
@@ -38,9 +40,16 @@ MOXFIELD_API = "https://api2.moxfield.com/v3/decks/all/{deck_id}"
 ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
 
 
-def load_config() -> dict:
-    with open(CONFIG_PATH, encoding="utf-8") as f:
-        return json.load(f)
+def output_dir() -> Path:
+    # .env sits next to the script; a real environment variable wins over it
+    load_dotenv(SCRIPT_DIR / ".env")
+    value = os.environ.get("VAULT_OUTPUT_DIR")
+    if not value:
+        sys.exit(
+            "VAULT_OUTPUT_DIR is not set.\n"
+            "Copy .env.example to .env and point it at your vault's deck folder."
+        )
+    return Path(value)
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +214,7 @@ def main() -> None:
     if len(argv) != 1:
         sys.exit(__doc__)
     deck_url = argv[0]
-    config = load_config()
-    out_dir = Path(config["vault_output_dir"])
+    out_dir = output_dir()
     if not out_dir.is_dir():
         sys.exit(f"Vault output folder does not exist: {out_dir}")
 

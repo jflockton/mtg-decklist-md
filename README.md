@@ -57,13 +57,18 @@ system Chrome for Moxfield decks; EDHREC needs no browser).
 pip install -r requirements.txt
 ```
 
-Point `config.json` at your vault's output folder:
+### ⚙️ Configuration
 
-```json
-{
-  "vault_output_dir": "C:/path/to/vault/03 - Personal/2026-07-18_MTG"
-}
+Copy `.env.example` to `.env` and point it at the folder in **your** vault
+where deck notes should land:
+
 ```
+VAULT_OUTPUT_DIR=C:/path/to/your/vault/MTG
+```
+
+That's the only setting. 📌 A real `VAULT_OUTPUT_DIR` environment variable
+takes priority over the `.env` file if you'd rather set it system-wide, and
+the `.env` file itself is gitignored — your vault path stays off GitHub.
 
 ## 🎮 Usage
 
