@@ -35,4 +35,5 @@ Output (into the configured vault folder):
 - `YYYY-MM-DD_MTG_<Commander Name>.md` — deck note: commander image, full deck
   list (commander first, then mainboard alphabetically), and empty review
   sections (first impressions, strengths, weaknesses, swaps, play notes).
-- `YYYY-MM-DD_MTG_<Commander Name>.jpg` — commander card image from Scryfall.
+- `Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg` — commander card image
+  from Scryfall (the `Attachments` subfolder is created if missing).

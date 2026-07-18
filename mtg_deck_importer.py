@@ -160,7 +160,9 @@ def main() -> None:
     safe_name = ILLEGAL_FILENAME_CHARS.sub("", primary)
     stem = f"{date.today().isoformat()}_MTG_{safe_name}"
 
-    image_path = out_dir / f"{stem}.jpg"
+    attachments_dir = out_dir / "Attachments"
+    attachments_dir.mkdir(exist_ok=True)
+    image_path = attachments_dir / f"{stem}.jpg"
     fetch_commander_art(primary, image_path)
 
     note_path = out_dir / f"{stem}.md"
