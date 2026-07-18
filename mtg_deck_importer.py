@@ -112,12 +112,6 @@ deck-url: {deck_url}
 
 ![[{image_filename}]]
 
-## 📜 Deck List
-
-```
-{listing}
-```
-
 ## 🧠 First Impressions
 
 -
@@ -137,6 +131,12 @@ deck-url: {deck_url}
 ## 📝 Play Notes
 
 -
+
+## 📜 Deck List
+
+```
+{listing}
+```
 """
 
 
