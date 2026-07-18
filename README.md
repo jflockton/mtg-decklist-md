@@ -30,9 +30,9 @@ Two files in your configured vault folder:
   - 🧠 **First Impressions** · 💪 **Strengths** · ⚠️ **Weaknesses** ·
     🔄 **Cards to Consider Swapping** · 📝 **Play Notes** — empty headings
     ready for your review
-  - 💰 **Deck Value + Priciest Cards** — four value estimates (EUR / GBP /
-    USD / TIX, also in the frontmatter for Dataview) and a top-10 table of
-    the most expensive cards
+  - 💰 **Deck Value + card prices** — four value estimates (EUR / GBP /
+    USD / TIX, also in the frontmatter for Dataview), a top-10 Priciest
+    Cards table, and a full per-card price table sorted dearest-first
   - 📜 **Deck List** — commander first, then mainboard alphabetically, one
     `1 Card Name` per line (pastes straight back into Moxfield / Arena)
 - 🎨 `Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg` — the commander card

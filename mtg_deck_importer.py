@@ -236,23 +236,27 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
     coverage = {"eur": 0, "usd": 0, "tix": 0}
     unpriced = []
     priced_cards = []
+    all_cards = []
     for qty, name in decklist:
         p = prices.get(name.lower())
         if not p or (p["eur"] is None and p["usd"] is None):
             unpriced.append(name)
+            all_cards.append((qty, name, None, None))
             continue
         for src in totals:
             if p.get(src) is not None:
                 totals[src] += p[src] * qty
                 coverage[src] += 1
         priced_cards.append((name, p["eur"], p["usd"]))
+        all_cards.append((qty, name, p["eur"], p["usd"]))
     top = sorted(priced_cards, key=lambda c: c[1] or 0, reverse=True)[:10]
+    all_cards.sort(key=lambda c: c[2] or 0, reverse=True)
     rate = eur_to_gbp_rate()
     if rate is not None:
         totals["gbp"] = totals["eur"] * rate
         coverage["gbp"] = coverage["eur"]
     return {"totals": totals, "coverage": coverage, "unique": len(decklist),
-            "top": top, "unpriced": unpriced}
+            "top": top, "all": all_cards, "unpriced": unpriced}
 
 
 def build_note(deck: dict, decklist: list[tuple[int, str]],
@@ -285,6 +289,10 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
     top_rows = "\n".join(
         f"| {name} | {money(eur, usd)[0]} | {money(eur, usd)[1]} |"
         for name, eur, usd in report["top"]
+    )
+    all_rows = "\n".join(
+        f"| {name}{f' ×{qty}' if qty > 1 else ''} | {money(eur, usd)[0]} | {money(eur, usd)[1]} |"
+        for qty, name, eur, usd in report["all"]
     )
     unpriced_note = (
         f"\n> ⚠️ No price found for {len(report['unpriced'])} card(s): "
@@ -338,6 +346,14 @@ price-date: {today}
 | Card | EUR | USD |
 |------|----:|----:|
 {top_rows}
+
+### 💵 All Card Prices
+
+Per-card prices (×N marks multiples — basics etc.; the price shown is per copy).
+
+| Card | EUR | USD |
+|------|----:|----:|
+{all_rows}
 {unpriced_note}
 ## 📜 Deck List
 
