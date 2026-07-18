@@ -104,6 +104,25 @@ priced. Treat the totals as fair estimates, not valuations.
 Needs 🐍 Python 3.10+ and 🌐 Google Chrome installed (the app drives the
 system Chrome for Moxfield decks; EDHREC needs no browser).
 
+Optional but tidy — create and activate a venv first (create once, activate
+each new terminal session):
+
+```
+python -m venv .venv
+
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+
+# Windows (cmd)
+.venv\Scripts\activate.bat
+
+# macOS / Linux
+source .venv/bin/activate
+```
+
+You're in when the prompt shows `(.venv)` — `deactivate` drops you back out.
+Then install the dependencies (with or without a venv):
+
 ```
 pip install -r requirements.txt
 ```
