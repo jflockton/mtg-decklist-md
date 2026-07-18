@@ -34,6 +34,8 @@ USER_AGENT = "mtg-decklist-md/1.0 (personal Obsidian tool)"
 HTTP_HEADERS = {"User-Agent": USER_AGENT, "Accept": "*/*"}
 
 SCRYFALL_NAMED = "https://api.scryfall.com/cards/named"
+SCRYFALL_COLLECTION = "https://api.scryfall.com/cards/collection"
+SCRYFALL_SEARCH = "https://api.scryfall.com/cards/search"
 MOXFIELD_API = "https://api2.moxfield.com/v3/decks/all/{deck_id}"
 
 # Windows-illegal filename characters (commas are fine and kept)
@@ -159,16 +161,106 @@ def fetch_commander_art(commander: str, dest: Path) -> None:
     dest.write_bytes(img.content)
 
 
+def fetch_prices(names: list[str]) -> dict[str, dict]:
+    """Daily market prices via Scryfall: EUR = Cardmarket, USD = TCGPlayer.
+    Returns {lowercased card name: {"eur": float|None, "usd": float|None}}.
+    """
+    prices: dict[str, dict] = {}
+    for i in range(0, len(names), 75):  # collection endpoint caps at 75 cards
+        chunk = names[i:i + 75]
+        r = requests.post(
+            SCRYFALL_COLLECTION,
+            json={"identifiers": [{"name": n} for n in chunk]},
+            headers=HTTP_HEADERS, timeout=30,
+        )
+        r.raise_for_status()
+        for card in r.json().get("data", []):
+            p = card.get("prices", {})
+            entry = {
+                "eur": float(p["eur"]) if p.get("eur") else None,
+                "usd": float(p["usd"]) if p.get("usd") else None,
+            }
+            prices[card["name"].lower()] = entry
+            # Let a front-face name find its double-faced card
+            if "//" in card["name"]:
+                prices.setdefault(card["name"].split("//")[0].strip().lower(), entry)
+        time.sleep(0.1)  # Scryfall asks for ~10 requests/sec max
+
+    # The collection endpoint returns one arbitrary printing per card, which
+    # can be an online-only set with no paper prices (e.g. Tempest Remastered
+    # Mox Diamond). For those, fall back to the cheapest paper printing.
+    for name in names:
+        entry = prices.get(name.lower())
+        if entry and (entry["eur"] is not None or entry["usd"] is not None):
+            continue
+        cheap = cheapest_paper_printing(name)
+        if cheap:
+            prices[name.lower()] = cheap
+        time.sleep(0.1)
+    return prices
+
+
+def cheapest_paper_printing(name: str) -> dict | None:
+    r = requests.get(
+        SCRYFALL_SEARCH,
+        params={"q": f'!"{name}" game:paper', "unique": "prints"},
+        headers=HTTP_HEADERS, timeout=30,
+    )
+    if r.status_code != 200:
+        return None
+    printings = r.json().get("data", [])
+    eurs = [float(c["prices"]["eur"]) for c in printings if c["prices"].get("eur")]
+    usds = [float(c["prices"]["usd"]) for c in printings if c["prices"].get("usd")]
+    if not eurs and not usds:
+        return None
+    return {"eur": min(eurs) if eurs else None, "usd": min(usds) if usds else None}
+
+
+def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> dict:
+    totals = {"eur": 0.0, "usd": 0.0}
+    unpriced = []
+    priced_cards = []
+    for qty, name in decklist:
+        p = prices.get(name.lower())
+        if not p or (p["eur"] is None and p["usd"] is None):
+            unpriced.append(name)
+            continue
+        totals["eur"] += (p["eur"] or 0) * qty
+        totals["usd"] += (p["usd"] or 0) * qty
+        priced_cards.append((name, p["eur"], p["usd"]))
+    top = sorted(priced_cards, key=lambda c: c[1] or 0, reverse=True)[:10]
+    return {"totals": totals, "top": top, "unpriced": unpriced}
+
+
 def build_note(deck: dict, decklist: list[tuple[int, str]],
-               image_filename: str, deck_url: str) -> str:
+               image_filename: str, deck_url: str, report: dict) -> str:
     today = date.today().isoformat()
     commander_line = ", ".join(deck["commanders"])
     listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
+    totals = report["totals"]
+
+    def money(eur, usd):
+        e = f"€{eur:,.2f}" if eur is not None else "—"
+        u = f"${usd:,.2f}" if usd is not None else "—"
+        return e, u
+
+    te, tu = money(totals["eur"], totals["usd"])
+    top_rows = "\n".join(
+        f"| {name} | {money(eur, usd)[0]} | {money(eur, usd)[1]} |"
+        for name, eur, usd in report["top"]
+    )
+    unpriced_note = (
+        f"\n> ⚠️ No price found for {len(report['unpriced'])} card(s): "
+        + ", ".join(report["unpriced"]) if report["unpriced"] else ""
+    )
     return f"""---
 tags: [mtg, deck, commander]
 created: {today}
 commander: {commander_line}
 deck-url: {deck_url}
+price-eur: {totals["eur"]:.2f}
+price-usd: {totals["usd"]:.2f}
+price-date: {today}
 ---
 
 # 🃏 {deck["name"]}
@@ -176,6 +268,7 @@ deck-url: {deck_url}
 **Commander:** {commander_line}
 **Format:** {deck["format"]}
 **Source:** [{deck["source"]}]({deck_url})
+**Value:** 💰 ≈ {te} · {tu} — Scryfall daily prices ({today}); EUR = Cardmarket, USD = TCGPlayer
 
 ![[{image_filename}]]
 
@@ -199,6 +292,12 @@ deck-url: {deck_url}
 
 -
 
+## 💰 Priciest Cards
+
+| Card | EUR | USD |
+|------|----:|----:|
+{top_rows}
+{unpriced_note}
 ## 📜 Deck List
 
 ```
@@ -237,15 +336,20 @@ def main() -> None:
     image_path = attachments_dir / f"{stem}.jpg"
     fetch_commander_art(primary, image_path)
 
+    report = price_report(decklist, fetch_prices([name for _, name in decklist]))
+
     note_path.write_text(
-        build_note(deck, decklist, image_path.name, deck_url),
+        build_note(deck, decklist, image_path.name, deck_url, report),
         encoding="utf-8",
     )
 
     total = sum(qty for qty, _ in decklist)
+    totals = report["totals"]
     print(f"Deck:      {deck['name']}")
     print(f"Commander: {', '.join(deck['commanders'])}")
     print(f"Cards:     {total} ({len(decklist)} unique)")
+    print(f"Value:     ~EUR {totals['eur']:,.2f} / USD {totals['usd']:,.2f}"
+          + (f"  ({len(report['unpriced'])} unpriced)" if report["unpriced"] else ""))
     print(f"Note:      {note_path}")
     print(f"Artwork:   {image_path}")
 

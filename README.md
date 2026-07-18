@@ -30,6 +30,8 @@ Two files in your configured vault folder:
   - 🧠 **First Impressions** · 💪 **Strengths** · ⚠️ **Weaknesses** ·
     🔄 **Cards to Consider Swapping** · 📝 **Play Notes** — empty headings
     ready for your review
+  - 💰 **deck value + Priciest Cards** — total EUR/USD value (also in the
+    frontmatter for Dataview) and a top-10 table of the most expensive cards
   - 📜 **Deck List** — commander first, then mainboard alphabetically, one
     `1 Card Name` per line (pastes straight back into Moxfield / Arena)
 - 🎨 `Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg` — the commander card
@@ -47,6 +49,15 @@ Moxfield ever blocks this too, the fallback is their built-in Export button
 
 Commander artwork comes from 🔓 [Scryfall's open API](https://scryfall.com/docs/api),
 which needs no browser (just polite `User-Agent`/`Accept` headers).
+
+## 💰 Where do the prices come from?
+
+Scryfall's daily market prices: **EUR = Cardmarket**, **USD = TCGPlayer**.
+There's no reliable GBP source (and no, not eBay — auction listings aren't a
+price index 😄). Most cards are priced in one bulk lookup; when Scryfall's
+default printing is an online-only set with no paper price (it happens — e.g.
+Tempest Remastered Mox Diamond), the app falls back to the **cheapest paper
+printing**. Treat the total as a fair estimate, not a valuation.
 
 ## 🚀 Setup
 
