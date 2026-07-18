@@ -1,14 +1,25 @@
 # 🃏 mtg-decklist-md
 
-**Moxfield deck URL in → Obsidian deck note out.** ✨
+**Deck URL in → Obsidian deck note out.** ✨
 
-Give it a Moxfield deck link and it drops a ready-to-review markdown note into
-your Obsidian vault — commander artwork, review sections for your thoughts,
-and the full deck list in clean copy-paste format.
+Give it a deck link and it drops a ready-to-review markdown note into your
+Obsidian vault — commander artwork, review sections for your thoughts, and the
+full deck list in clean copy-paste format.
 
 ```
 python mtg_deck_importer.py https://moxfield.com/decks/<public_id>
+python mtg_deck_importer.py https://edhrec.com/deckpreview/<hash>
 ```
+
+## 🌐 Supported sites
+
+| Site | How it's fetched |
+|------|------------------|
+| 🟣 [Moxfield](https://moxfield.com) — `…/decks/<id>` | Headed Chrome (Cloudflare — see below) |
+| 🟠 [EDHREC](https://edhrec.com) — `…/deckpreview/<hash>` | Plain HTTP — no browser window 🎉 |
+
+🛡️ An existing deck note is **never overwritten** (your review notes live in
+it) — pass `--force` to regenerate one anyway.
 
 ## 📦 What you get
 
@@ -24,7 +35,7 @@ Two files in your configured vault folder:
 - 🎨 `Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg` — the commander card
   from Scryfall (the `Attachments` subfolder is created if missing)
 
-## 🤔 Why does a Chrome window pop up?
+## 🤔 Why does a Chrome window pop up (Moxfield only)?
 
 Moxfield sits behind Cloudflare bot protection: 🚫 plain `requests`/`curl`
 get HTTP 403 no matter the headers, and 🚫 headless browsers get the
@@ -40,7 +51,7 @@ which needs no browser (just polite `User-Agent`/`Accept` headers).
 ## 🚀 Setup
 
 Needs 🐍 Python 3.10+ and 🌐 Google Chrome installed (the app drives the
-system Chrome).
+system Chrome for Moxfield decks; EDHREC needs no browser).
 
 ```
 pip install -r requirements.txt
@@ -70,6 +81,6 @@ Artwork:   ...\Attachments\2026-07-18_MTG_Cass, Hand of Vengeance.jpg
 
 ## 🙏 Credits
 
-- 🃏 Deck data: [Moxfield](https://moxfield.com)
+- 🃏 Deck data: [Moxfield](https://moxfield.com) & [EDHREC](https://edhrec.com)
 - 🎨 Card data & images: [Scryfall](https://scryfall.com)
 - Card images © Wizards of the Coast — personal use only
