@@ -26,7 +26,10 @@ it) — pass `--force` to regenerate one anyway.
 Two files in your configured vault folder:
 
 - 📝 `YYYY-MM-DD_MTG_<Commander Name>.md` — the deck note:
-  - 🖼️ commander card image (embedded, offline-safe)
+  - 🖼️ commander card image — embedded as a standard markdown link to
+    Scryfall's hosted image, so it renders in **any** markdown viewer (not
+    just Obsidian); a local copy is still saved to `Attachments/` as an
+    offline backup
   - 🧠 **First Impressions** · 💪 **Strengths** · ⚠️ **Weaknesses** ·
     🔄 **Cards to Consider Swapping** · 📝 **Play Notes** — empty headings
     ready for your review

@@ -148,7 +148,11 @@ def fetch_deck(url: str) -> dict:
 # Output
 # ---------------------------------------------------------------------------
 
-def fetch_commander_art(commander: str, dest: Path) -> None:
+def fetch_commander_art(commander: str, dest: Path) -> str:
+    """Download the card image to dest (offline backup) and return its
+    Scryfall URL — the note embeds the URL so it renders in any markdown
+    viewer, not just Obsidian.
+    """
     # Scryfall rejects requests without proper User-Agent/Accept headers
     r = requests.get(SCRYFALL_NAMED, params={"exact": commander},
                      headers=HTTP_HEADERS, timeout=30)
@@ -160,6 +164,7 @@ def fetch_commander_art(commander: str, dest: Path) -> None:
     img = requests.get(image_uris["normal"], headers=HTTP_HEADERS, timeout=30)
     img.raise_for_status()
     dest.write_bytes(img.content)
+    return image_uris["normal"]
 
 
 def fetch_prices(names: list[str]) -> dict[str, dict]:
@@ -261,7 +266,7 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
 
 
 def build_note(deck: dict, decklist: list[tuple[int, str]],
-               image_filename: str, deck_url: str, report: dict) -> str:
+               image_url: str, deck_url: str, report: dict) -> str:
     today = date.today().isoformat()
     commander_line = ", ".join(deck["commanders"])
     listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
@@ -341,7 +346,7 @@ price-date: {today}
 
 *💰 Standard (non-foil) cards, Scryfall daily snapshot ({today}). ≈ GBP is rough — ECB reference rates via frankfurter.dev; 1 tix ≈ $1.*
 
-![[{image_filename}|290]]
+![{commander_line}|290]({image_url})
 
 ## 🧠 First Impressions
 
@@ -413,12 +418,12 @@ def main() -> None:
     attachments_dir = out_dir / "Attachments"
     attachments_dir.mkdir(exist_ok=True)
     image_path = attachments_dir / f"{stem}.jpg"
-    fetch_commander_art(primary, image_path)
+    image_url = fetch_commander_art(primary, image_path)
 
     report = price_report(decklist, fetch_prices([name for _, name in decklist]))
 
     note_path.write_text(
-        build_note(deck, decklist, image_path.name, deck_url, report),
+        build_note(deck, decklist, image_url, deck_url, report),
         encoding="utf-8",
     )
 
