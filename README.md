@@ -30,9 +30,9 @@ Two files in your configured vault folder:
   - 🧠 **First Impressions** · 💪 **Strengths** · ⚠️ **Weaknesses** ·
     🔄 **Cards to Consider Swapping** · 📝 **Play Notes** — empty headings
     ready for your review
-  - 💰 **Deck Value + Priciest Cards** — totals from three price sources
-    (also in the frontmatter for Dataview) and a top-10 table of the most
-    expensive cards
+  - 💰 **Deck Value + Priciest Cards** — four value estimates (EUR / GBP /
+    USD / TIX, also in the frontmatter for Dataview) and a top-10 table of
+    the most expensive cards
   - 📜 **Deck List** — commander first, then mainboard alphabetically, one
     `1 Card Name` per line (pastes straight back into Moxfield / Arena)
 - 🎨 `Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg` — the commander card
@@ -54,13 +54,17 @@ which needs no browser (just polite `User-Agent`/`Accept` headers).
 ## 💰 Where do the prices come from?
 
 Scryfall's daily price snapshot, always for the **standard (non-foil) card**,
-totalled per source in the note's Deck Value table:
+totalled into four estimates shown right under the note's Source line:
 
 | Source | Currency | Market |
 |--------|----------|--------|
 | 🇪🇺 [Cardmarket](https://www.cardmarket.com/en/Magic) | EUR | European paper singles |
+| 💷 GBP estimate | GBP | Cardmarket EUR × the ECB reference rate ([frankfurter.dev](https://frankfurter.dev)) |
 | 🇺🇸 [TCGPlayer](https://www.tcgplayer.com) | USD | US paper singles |
 | 🖥️ [Cardhoarder](https://www.cardhoarder.com) | TIX | Magic Online |
+
+(Scryfall itself isn't a marketplace — it's the aggregator all these numbers
+come from. If the exchange-rate API is unreachable, the GBP row is skipped.)
 
 There's no reliable GBP source (and no, not eBay — auction listings aren't a
 price index 😄). Most cards are priced in one bulk lookup; when Scryfall's

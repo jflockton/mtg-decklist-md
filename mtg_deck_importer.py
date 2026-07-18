@@ -36,6 +36,7 @@ HTTP_HEADERS = {"User-Agent": USER_AGENT, "Accept": "*/*"}
 SCRYFALL_NAMED = "https://api.scryfall.com/cards/named"
 SCRYFALL_COLLECTION = "https://api.scryfall.com/cards/collection"
 SCRYFALL_SEARCH = "https://api.scryfall.com/cards/search"
+ECB_RATES = "https://api.frankfurter.dev/v1/latest"
 MOXFIELD_API = "https://api2.moxfield.com/v3/decks/all/{deck_id}"
 
 # Windows-illegal filename characters (commas are fine and kept)
@@ -219,6 +220,17 @@ def cheapest_paper_printing(name: str) -> dict | None:
     return {"eur": min(eurs) if eurs else None, "usd": min(usds) if usds else None}
 
 
+def eur_to_gbp_rate() -> float | None:
+    """Current ECB reference rate via frankfurter.dev; None if unreachable."""
+    try:
+        r = requests.get(ECB_RATES, params={"base": "EUR", "symbols": "GBP"},
+                         headers=HTTP_HEADERS, timeout=15)
+        r.raise_for_status()
+        return float(r.json()["rates"]["GBP"])
+    except Exception:
+        return None
+
+
 def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> dict:
     totals = {"eur": 0.0, "usd": 0.0, "tix": 0.0}
     coverage = {"eur": 0, "usd": 0, "tix": 0}
@@ -235,6 +247,10 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
                 coverage[src] += 1
         priced_cards.append((name, p["eur"], p["usd"]))
     top = sorted(priced_cards, key=lambda c: c[1] or 0, reverse=True)[:10]
+    rate = eur_to_gbp_rate()
+    if rate is not None:
+        totals["gbp"] = totals["eur"] * rate
+        coverage["gbp"] = coverage["eur"]
     return {"totals": totals, "coverage": coverage, "unique": len(decklist),
             "top": top, "unpriced": unpriced}
 
@@ -253,14 +269,18 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
         u = f"${usd:,.2f}" if usd is not None else "—"
         return e, u
 
-    te, tu = money(totals["eur"], totals["usd"])
     value_rows = "\n".join(
         f"| {label} | {sym}{totals[src]:,.2f} | {coverage[src]}/{unique} |"
         for src, label, sym in [
             ("eur", "🇪🇺 Cardmarket (EUR)", "€"),
+            ("gbp", "💷 GBP estimate (Cardmarket EUR → £, ECB rate)", "£"),
             ("usd", "🇺🇸 TCGPlayer (USD)", "$"),
             ("tix", "🖥️ Cardhoarder (MTGO tix)", ""),
-        ]
+        ] if src in totals
+    )
+    price_frontmatter = "\n".join(
+        f"price-{src}: {totals[src]:.2f}"
+        for src in ("eur", "gbp", "usd", "tix") if src in totals
     )
     top_rows = "\n".join(
         f"| {name} | {money(eur, usd)[0]} | {money(eur, usd)[1]} |"
@@ -275,9 +295,7 @@ tags: [mtg, deck, commander]
 created: {today}
 commander: {commander_line}
 deck-url: {deck_url}
-price-eur: {totals["eur"]:.2f}
-price-usd: {totals["usd"]:.2f}
-price-tix: {totals["tix"]:.2f}
+{price_frontmatter}
 price-date: {today}
 ---
 
@@ -286,7 +304,12 @@ price-date: {today}
 **Commander:** {commander_line}
 **Format:** {deck["format"]}
 **Source:** [{deck["source"]}]({deck_url})
-**Value:** 💰 ≈ {te} · {tu} — standard (non-foil) cards, Scryfall daily prices ({today})
+
+| Source | Value | Cards priced |
+|--------|------:|-------------:|
+{value_rows}
+
+*💰 Standard (non-foil) cards, Scryfall daily snapshot ({today}).*
 
 ![[{image_filename}]]
 
@@ -310,15 +333,7 @@ price-date: {today}
 
 -
 
-## 💰 Deck Value
-
-Standard (non-foil) card prices, via Scryfall's daily snapshot ({today}).
-
-| Source | Value | Cards priced |
-|--------|------:|-------------:|
-{value_rows}
-
-### 🏆 Priciest Cards
+## 🏆 Priciest Cards
 
 | Card | EUR | USD |
 |------|----:|----:|
@@ -374,7 +389,8 @@ def main() -> None:
     print(f"Deck:      {deck['name']}")
     print(f"Commander: {', '.join(deck['commanders'])}")
     print(f"Cards:     {total} ({len(decklist)} unique)")
-    print(f"Value:     ~EUR {totals['eur']:,.2f} / USD {totals['usd']:,.2f}"
+    gbp = f" / GBP {totals['gbp']:,.2f}" if "gbp" in totals else ""
+    print(f"Value:     ~EUR {totals['eur']:,.2f}{gbp} / USD {totals['usd']:,.2f}"
           f" / TIX {totals['tix']:,.2f}"
           + (f"  ({len(report['unpriced'])} unpriced)" if report["unpriced"] else ""))
     print(f"Note:      {note_path}")
