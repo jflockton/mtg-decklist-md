@@ -9,14 +9,21 @@ full deck list in clean copy-paste format.
 ```
 python mtg_deck_importer.py https://moxfield.com/decks/<public_id>
 python mtg_deck_importer.py https://edhrec.com/deckpreview/<hash>
+python mtg_deck_importer.py "path/to/My Deck Name.txt"
 ```
 
-## 🌐 Supported sites
+## 🌐 Supported sources
 
-| Site | How it's fetched |
-|------|------------------|
+| Source | How it's fetched |
+|--------|------------------|
 | 🟣 [Moxfield](https://moxfield.com) — `…/decks/<id>` | Headed Chrome (Cloudflare — see below) |
 | 🟠 [EDHREC](https://edhrec.com) — `…/deckpreview/<hash>` | Plain HTTP — no browser window 🎉 |
+| 📄 Local `.txt` decklist | Read directly — no network for the list itself |
+
+For a `.txt` file: one `1 Card Name` per line (the usual export format),
+**first card is the commander**, and the file name becomes the deck name —
+`Krenko Goblin Swarm.txt` → deck "Krenko Goblin Swarm". Artwork and prices
+still come from Scryfall as normal.
 
 🛡️ An existing deck note is **never overwritten** (your review notes live in
 it) — pass `--force` to regenerate one anyway.

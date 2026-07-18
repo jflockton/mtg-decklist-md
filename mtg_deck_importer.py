@@ -3,6 +3,11 @@
 Usage:
     python mtg_deck_importer.py [--force] https://moxfield.com/decks/<public_id>
     python mtg_deck_importer.py [--force] https://edhrec.com/deckpreview/<hash>
+    python mtg_deck_importer.py [--force] "path/to/My Deck.txt"
+
+A .txt file is a decklist in the usual export format — one "1 Card Name" per
+line, first card is the commander. The file name (minus .txt) becomes the
+deck name.
 
 An existing deck note is never overwritten (your review notes live in it) —
 pass --force to regenerate it anyway.
@@ -94,7 +99,7 @@ def fetch_moxfield(url: str) -> dict:
     return {
         "name": deck["name"],
         "format": deck.get("format", "commander").title(),
-        "source": "Moxfield",
+        "source_md": f"[Moxfield]({url})",
         "commanders": sorted(name for _, name in board("commanders")),
         "mainboard": board("mainboard"),
     }
@@ -124,9 +129,33 @@ def fetch_edhrec(url: str) -> dict:
     return {
         "name": data.get("header") or f"Deck with {', '.join(commanders)}",
         "format": "Commander (cEDH)" if data.get("cedh") else "Commander",
-        "source": "EDHREC",
+        "source_md": f"[EDHREC]({url})",
         "commanders": commanders,
         "mainboard": mainboard,
+    }
+
+
+def fetch_textfile(path_str: str) -> dict:
+    """A local decklist in the standard export format: one 'N Card Name' per
+    line, first card is the commander. Deck name = file name without .txt.
+    """
+    path = Path(path_str)
+    cards = []
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"(\d+)[xX]?\s+(.*)", line)
+        cards.append((int(m.group(1)), m.group(2).strip()) if m else (1, line))
+    if not cards:
+        sys.exit(f"No cards found in {path}")
+    commander = cards[0][1]
+    return {
+        "name": path.stem,
+        "format": "Commander",
+        "source_md": f"📄 `{path.name}`",
+        "commanders": [commander],
+        "mainboard": [(q, n) for q, n in cards[1:] if n != commander],
     }
 
 
@@ -140,8 +169,11 @@ def fetch_deck(url: str) -> dict:
     for pattern, fetcher in FETCHERS:
         if pattern.search(url):
             return fetcher(url)
+    if url.lower().endswith(".txt") and Path(url).is_file():
+        return fetch_textfile(url)
     supported = ", ".join(p.pattern.replace("\\", "") for p, _ in FETCHERS)
-    sys.exit(f"Unsupported deck URL: {url}\nSupported sites: {supported}")
+    sys.exit(f"Unsupported deck source: {url}\n"
+             f"Supported: {supported}, or a path to a .txt decklist")
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +370,7 @@ price-date: {today}
 
 **Commander:** {commander_line}
 **Format:** {deck["format"]}
-**Source:** [{deck["source"]}]({deck_url})
+**Source:** {deck["source_md"]}
 
 | Source | Value | ≈ GBP | Cards priced |
 |--------|------:|------:|-------------:|
