@@ -296,6 +296,7 @@ def fetch_textfile(path_str: str) -> dict:
         "source_md": f"📄 `{path.name}`",
         "commanders": [commander],
         "mainboard": [(q, n) for n, q in merged.items()],
+        "txt_path": str(path),
     }
 
 
@@ -651,6 +652,12 @@ def main() -> None:
     deck = fetch_deck(deck_url)
     if not deck["commanders"]:
         sys.exit("No commander found on this deck — is it a Commander deck?")
+
+    # Imported .txt files are archived to ./imports (gitignored) after a
+    # successful run — the note's deck-url points at the archived copy
+    txt_src = Path(deck["txt_path"]).resolve() if deck.get("txt_path") else None
+    if txt_src:
+        deck_url = f"imports/{txt_src.name}"
     mainboard = sorted(deck["mainboard"], key=lambda c: c[1].lower())
     decklist = [(1, name) for name in deck["commanders"]] + mainboard
 
@@ -705,6 +712,14 @@ def main() -> None:
         build_note(deck, decklist, image_url, deck_url, report, buy, collection_name),
         encoding="utf-8",
     )
+
+    if txt_src:
+        imports_dir = SCRIPT_DIR / "imports"
+        imports_dir.mkdir(exist_ok=True)
+        dest = imports_dir / txt_src.name
+        if txt_src != dest.resolve():
+            txt_src.replace(dest)
+            print(f"Archived:  {dest}")
 
     total = sum(qty for qty, _ in decklist)
     totals = report["totals"]

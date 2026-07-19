@@ -25,8 +25,11 @@ to your collection (see below).
 
 For a `.txt` file: one `1 Card Name` per line (the usual export format),
 **first card is the commander**, and the file name becomes the deck name —
-`Krenko Goblin Swarm.txt` → deck "Krenko Goblin Swarm". Artwork and prices
-still come from Scryfall as normal.
+`Krenko Goblin Swarm.txt` → deck "Krenko Goblin Swarm". Call the file
+whatever you like; the name only sets the note's title and identifies the
+deck on re-import. Artwork and prices still come from Scryfall as normal.
+After a successful import the file is **moved to `./imports/`** (gitignored)
+as your record of what was imported; the note's `deck-url` points there.
 
 🛡️ An existing deck note is **never overwritten** (your review notes live in
 it) — pass `--force` to regenerate one anyway. A note counts as the *same
