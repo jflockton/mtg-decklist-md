@@ -12,6 +12,10 @@ deck name.
 An existing deck note is never overwritten (your review notes live in it) —
 pass --force to regenerate it anyway.
 
+--own marks the whole deck as owned: its card list is appended to
+_Collection.md (under the deck's name) before the comparison runs — use it
+when you buy a precon you'd imported as a wishlist deck.
+
 Fetches the deck list (Moxfield via a headed browser because of Cloudflare;
 EDHREC via plain HTTP), downloads the commander's artwork from Scryfall, and
 writes a markdown deck note into the Obsidian vault folder set by the
@@ -68,7 +72,7 @@ def load_collection(out_dir: Path) -> tuple[str, dict[str, int]] | None:
     prose, and blank lines are ignored, so the file can be a normal note.
     Returns (file name, {lowercased name: owned qty}) or None if absent.
     """
-    path = Path(os.environ.get("COLLECTION_FILE") or out_dir / "_Collection.md")
+    path = collection_path(out_dir)
     if not path.is_file():
         return None
     owned: dict[str, int] = {}
@@ -134,6 +138,27 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
     return {"missing": missing, "totals": totals,
             "owned_unique": owned_unique, "owned_copies": owned_copies,
             "unique": len(decklist), "total_copies": total_copies}
+
+
+def collection_path(out_dir: Path) -> Path:
+    return Path(os.environ.get("COLLECTION_FILE") or out_dir / "_Collection.md")
+
+
+def add_deck_to_collection(out_dir: Path, deck_name: str,
+                           decklist: list[tuple[int, str]]) -> bool:
+    """Append the whole deck under its own heading in _Collection.md (--own).
+    Returns False if a section for this deck already exists.
+    """
+    path = collection_path(out_dir)
+    heading = f"## 📦 {deck_name}"
+    existing = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
+    if heading.lower() in existing.lower():
+        return False
+    listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
+    block = f"\n{heading} (added {date.today().isoformat()})\n\n{listing}\n"
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(block)
+    return True
 
 
 def output_dir() -> Path:
@@ -553,7 +578,8 @@ Per-card prices (×N marks multiples — basics etc.; the price shown is per cop
 def main() -> None:
     argv = sys.argv[1:]
     force = "--force" in argv
-    argv = [a for a in argv if a != "--force"]
+    own = "--own" in argv
+    argv = [a for a in argv if a not in ("--force", "--own")]
     if len(argv) != 1:
         sys.exit(__doc__)
     deck_url = argv[0]
@@ -598,6 +624,12 @@ def main() -> None:
     attachments_dir.mkdir(exist_ok=True)
     image_path = attachments_dir / f"{stem}.jpg"
     image_url = fetch_commander_art(primary, image_path)
+
+    if own:
+        if add_deck_to_collection(out_dir, deck["name"], decklist):
+            print(f"Collection: deck added to {collection_path(out_dir).name}")
+        else:
+            print(f"Collection: already lists '{deck['name']}' — nothing added")
 
     prices = fetch_prices([name for _, name in decklist])
     report = price_report(decklist, prices)

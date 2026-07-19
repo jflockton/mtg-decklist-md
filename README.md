@@ -12,6 +12,9 @@ python mtg_deck_importer.py https://edhrec.com/deckpreview/<hash>
 python mtg_deck_importer.py "path/to/My Deck Name.txt"
 ```
 
+Flags: `--force` regenerates an existing note; `--own` adds the whole deck
+to your collection (see below).
+
 ## 🌐 Supported sources
 
 | Source | How it's fetched |
@@ -48,6 +51,13 @@ the cards you're missing (quantity-aware — owning 10 Mountains against a
 cost to complete the deck in EUR / USD / ≈ GBP. The owned count and buy
 totals also land in the frontmatter (`owned`, `buy-eur`, `buy-gbp`) for
 Dataview. No collection file? The section is simply skipped.
+
+🏷️ **Wishlist precons**: import a precon you're *thinking* of buying as
+normal — its Cards to Buy total is the deck's value in singles, which tells
+you whether the sealed product or the singles are the better deal. When you
+do buy it, re-run with **`--own`**: the whole deck list is appended to
+`_Collection.md` under the deck's name (skipped if already there), and the
+note refreshes to fully owned. One flag instead of hand-copying ~100 cards.
 
 🎭 **Flavor names are understood**: Universes Beyond precons print some cards
 under skinned names (the Marvel decks call Spark Double "Loki's Double") while
