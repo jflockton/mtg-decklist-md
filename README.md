@@ -15,6 +15,12 @@ python mtg_deck_importer.py "path/to/My Deck Name.txt"
 Flags: `--force` regenerates an existing note; `--own` adds the whole deck
 to your collection (see below).
 
+**Updated your collection?** `python mtg_deck_importer.py --recheck` (no URL)
+refreshes the 🛒 Cards to Buy section of *every* deck note against the
+current `_Collection.md`, using the deck list stored in each note — no site
+fetching, no browser windows, nothing else in the notes is touched. Works
+even for decks whose original source is gone.
+
 ## 🌐 Supported sources
 
 | Source | How it's fetched |

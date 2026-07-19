@@ -16,6 +16,11 @@ pass --force to regenerate it anyway.
 _Collection.md (under the deck's name) before the comparison runs — use it
 when you buy a precon you'd imported as a wishlist deck.
 
+`python mtg_deck_importer.py --recheck` (no URL) refreshes every note's
+Cards to Buy section against the current _Collection.md, using the deck
+list stored in each note — run it after updating your collection. No site
+fetching, no browser; review sections and everything else stay untouched.
+
 Fetches the deck list (Moxfield via a headed browser because of Cloudflare;
 EDHREC via plain HTTP), downloads the commander's artwork from Scryfall, and
 writes a markdown deck note into the Obsidian vault folder set by the
@@ -445,6 +450,97 @@ REVIEW_SECTIONS = ["🧠 First Impressions", "💪 Strengths", "⚠️ Weaknesse
                    "🔄 Cards to Consider Swapping", "📝 Play Notes"]
 
 
+def _money(eur, usd):
+    e = f"€{eur:,.2f}" if eur is not None else "—"
+    u = f"${usd:,.2f}" if usd is not None else "—"
+    return e, u
+
+
+def _gbp_cell(amount):
+    return f"£{amount:,.2f}" if amount is not None else "—"
+
+
+def _card_gbp(eur, usd, rates):
+    # Prefer the Cardmarket EUR price; fall back to USD if only that exists
+    if not rates:
+        return None
+    if eur is not None:
+        return eur * rates["eur_gbp"]
+    if usd is not None:
+        return usd * rates["usd_gbp"]
+    return None
+
+
+def buy_frontmatter(buy: dict, rates: dict | None) -> str:
+    lines = [f"owned: {buy['owned_unique']}/{buy['unique']}",
+             f"buy-eur: {buy['totals']['eur']:.2f}"]
+    if rates:
+        lines.append(f"buy-gbp: {buy['totals']['eur'] * rates['eur_gbp']:.2f}")
+    return "\n".join(lines)
+
+
+def render_buy_section(buy: dict, collection_name: str, rates: dict | None) -> str:
+    summary = (f"Compared against `{collection_name}` — you own "
+               f"**{buy['owned_unique']}/{buy['unique']}** cards "
+               f"({buy['owned_copies']}/{buy['total_copies']} copies).")
+    if not buy["missing"]:
+        return f"""## 🛒 Cards to Buy
+
+{summary}
+🎉 **You own every card in this deck — nothing to buy!**
+
+"""
+    buy_gbp = _gbp_cell(buy["totals"]["eur"] * rates["eur_gbp"] if rates else None)
+    buy_rows = "\n".join(
+        f"| {name} | {need} | {_money(eur, usd)[0]} | {_money(eur, usd)[1]} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
+        for need, name, eur, usd, _ in buy["missing"]
+    )
+
+    # Same card, cheaper printing (incl. plain-MTG versions of
+    # Universes Beyond skins) — worth a table when it saves anything
+    cheaper = []
+    best_total_eur = 0.0
+    for need, name, eur, usd, info in buy["missing"]:
+        ch = (info or {}).get("cheapest")
+        effective = eur
+        if ch and ch["eur"] is not None and (eur is None or ch["eur"] < eur - 0.005):
+            label = ch["printed_as"] if ch["printed_as"].lower() != name.lower() \
+                else info["canonical"]
+            cheaper.append((name, label, ch["set"], ch["eur"], eur, need))
+            effective = ch["eur"]
+        best_total_eur += (effective or 0) * need
+    cheaper_section = ""
+    if cheaper:
+        saved = buy["totals"]["eur"] - best_total_eur
+        cheaper_rows = "\n".join(
+            f"| {name} | {label} ({set_name}) | €{cheap:,.2f} | {_money(deck_eur, None)[0]} | €{(deck_eur or 0) - cheap:,.2f} |"
+            for name, label, set_name, cheap, deck_eur, _ in cheaper
+        )
+        best_gbp = _gbp_cell(best_total_eur * rates["eur_gbp"] if rates else None)
+        cheaper_section = f"""### 💡 Cheaper Printings
+
+Same card, different printing or name — Universes Beyond skins are only art
+and printed-name swaps, so the plain version is functionally identical.
+
+| Card in deck | Cheapest version (set) | EUR | Deck version | Save |
+|--------------|------------------------|----:|-------------:|-----:|
+{cheaper_rows}
+
+Buying the cheapest printings instead ≈ **€{best_total_eur:,.2f} · {best_gbp}** — saves **€{saved:,.2f}**.
+
+"""
+    return f"""## 🛒 Cards to Buy
+
+{summary}
+Completing the deck ≈ **€{buy["totals"]["eur"]:,.2f} · ${buy["totals"]["usd"]:,.2f} · {buy_gbp}** (prices per copy below).
+
+| Card | Need | EUR | USD | ≈ GBP |
+|------|-----:|----:|----:|------:|
+{buy_rows}
+
+{cheaper_section}"""
+
+
 def extract_reviews(text: str) -> dict[str, str]:
     """Pull hand-written review content out of an existing note so a --force
     regeneration refreshes the data without destroying your thoughts.
@@ -529,70 +625,8 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
 
     buy_section = ""
     if buy is not None:
-        summary = (f"Compared against `{collection_name}` — you own "
-                   f"**{buy['owned_unique']}/{buy['unique']}** cards "
-                   f"({buy['owned_copies']}/{buy['total_copies']} copies).")
-        if buy["missing"]:
-            buy_gbp = gbp_cell(buy["totals"]["eur"] * rates["eur_gbp"] if rates else None)
-            buy_rows = "\n".join(
-                f"| {name} | {need} | {money(eur, usd)[0]} | {money(eur, usd)[1]} | {gbp_cell(card_gbp(eur, usd))} |"
-                for need, name, eur, usd, _ in buy["missing"]
-            )
-
-            # Same card, cheaper printing (incl. plain-MTG versions of
-            # Universes Beyond skins) — worth a table when it saves anything
-            cheaper = []
-            best_total_eur = 0.0
-            for need, name, eur, usd, info in buy["missing"]:
-                ch = (info or {}).get("cheapest")
-                effective = eur
-                if ch and ch["eur"] is not None and (eur is None or ch["eur"] < eur - 0.005):
-                    label = ch["printed_as"] if ch["printed_as"].lower() != name.lower() \
-                        else info["canonical"]
-                    cheaper.append((name, label, ch["set"], ch["eur"], eur, need))
-                    effective = ch["eur"]
-                best_total_eur += (effective or 0) * need
-            cheaper_section = ""
-            if cheaper:
-                saved = buy["totals"]["eur"] - best_total_eur
-                cheaper_rows = "\n".join(
-                    f"| {name} | {label} ({set_name}) | €{cheap:,.2f} | {money(deck_eur, None)[0]} | €{(deck_eur or 0) - cheap:,.2f} |"
-                    for name, label, set_name, cheap, deck_eur, _ in cheaper
-                )
-                best_gbp = gbp_cell(best_total_eur * rates["eur_gbp"] if rates else None)
-                cheaper_section = f"""### 💡 Cheaper Printings
-
-Same card, different printing or name — Universes Beyond skins are only art
-and printed-name swaps, so the plain version is functionally identical.
-
-| Card in deck | Cheapest version (set) | EUR | Deck version | Save |
-|--------------|------------------------|----:|-------------:|-----:|
-{cheaper_rows}
-
-Buying the cheapest printings instead ≈ **€{best_total_eur:,.2f} · {best_gbp}** — saves **€{saved:,.2f}**.
-
-"""
-            buy_section = f"""## 🛒 Cards to Buy
-
-{summary}
-Completing the deck ≈ **€{buy["totals"]["eur"]:,.2f} · ${buy["totals"]["usd"]:,.2f} · {buy_gbp}** (prices per copy below).
-
-| Card | Need | EUR | USD | ≈ GBP |
-|------|-----:|----:|----:|------:|
-{buy_rows}
-
-{cheaper_section}"""
-        else:
-            buy_section = f"""## 🛒 Cards to Buy
-
-{summary}
-🎉 **You own every card in this deck — nothing to buy!**
-
-"""
-        price_frontmatter += f"\nowned: {buy['owned_unique']}/{buy['unique']}"
-        price_frontmatter += f"\nbuy-eur: {buy['totals']['eur']:.2f}"
-        if rates:
-            price_frontmatter += f"\nbuy-gbp: {buy['totals']['eur'] * rates['eur_gbp']:.2f}"
+        buy_section = render_buy_section(buy, collection_name, rates)
+        price_frontmatter += "\n" + buy_frontmatter(buy, rates)
 
     return f"""---
 tags: [mtg, deck, commander]
@@ -642,11 +676,61 @@ Per-card prices (×N marks multiples — basics etc.; the price shown is per cop
 """
 
 
+def recheck_all(out_dir: Path) -> None:
+    """Re-run only the collection comparison for every deck note, using the
+    deck list stored in the note itself — no site fetching, no browser.
+    Rewrites the Cards to Buy section and its frontmatter fields in place.
+    """
+    collection = load_collection(out_dir)
+    if not collection:
+        sys.exit(f"No collection file found at {collection_path(out_dir)}")
+    collection_name, owned = collection
+    rates = fx_rates()
+    notes = sorted(out_dir.glob("????-??-??_MTG_*.md"))
+    if not notes:
+        sys.exit(f"No deck notes found in {out_dir}")
+
+    for note in notes:
+        text = note.read_text(encoding="utf-8")
+        block = re.search(r"## 📜 Deck List\s*```\n(.*?)```", text, re.S)
+        if not block:
+            print(f"{note.name}: no deck list found — skipped")
+            continue
+        decklist = []
+        for line in block.group(1).splitlines():
+            parsed = parse_card_line(line)
+            if parsed:
+                decklist.append(parsed)
+        prices = fetch_prices([n for _, n in decklist])
+        buy = buy_report(decklist, owned, prices)
+        section = render_buy_section(buy, collection_name, rates)
+
+        if "## 🛒 Cards to Buy" in text:
+            text = re.sub(r"## 🛒 Cards to Buy\n.*?(?=## 🏆 Priciest Cards)",
+                          section, text, count=1, flags=re.S)
+        else:
+            text = text.replace("## 🏆 Priciest Cards",
+                                section + "## 🏆 Priciest Cards", 1)
+        text = re.sub(r"^(owned|buy-eur|buy-gbp): .*\n", "", text, flags=re.M)
+        text = text.replace("\nprice-date:",
+                            "\n" + buy_frontmatter(buy, rates) + "\nprice-date:", 1)
+        note.write_text(text, encoding="utf-8")
+        print(f"{note.name}: own {buy['owned_unique']}/{buy['unique']}"
+              f" — to buy {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f})")
+
+
 def main() -> None:
     argv = sys.argv[1:]
     force = "--force" in argv
     own = "--own" in argv
-    argv = [a for a in argv if a not in ("--force", "--own")]
+    recheck = "--recheck" in argv
+    argv = [a for a in argv if a not in ("--force", "--own", "--recheck")]
+    if recheck:
+        if argv:
+            sys.exit("--recheck takes no URL/file — it refreshes every note's"
+                     " Cards to Buy from the deck lists already in the notes.")
+        recheck_all(output_dir())
+        return
     if len(argv) != 1:
         sys.exit(__doc__)
     deck_url = argv[0]
