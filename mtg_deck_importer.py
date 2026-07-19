@@ -47,6 +47,20 @@ MOXFIELD_API = "https://api2.moxfield.com/v3/decks/all/{deck_id}"
 # Windows-illegal filename characters (commas are fine and kept)
 ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
 
+# Moxfield export decorations after a card name: foil/etched markers (*F*),
+# collector info like (PLST) 123 — strip so names match Scryfall
+NAME_DECORATIONS = re.compile(r"\s*(\*[A-Za-z]\*|\([A-Z0-9]{2,6}\)\s*[\w-]*)\s*$")
+
+
+def parse_card_line(line: str) -> tuple[int, str] | None:
+    line = line.strip()
+    if not line:
+        return None
+    m = re.match(r"(\d+)[xX]?\s+(.+)", line)
+    qty, name = (int(m.group(1)), m.group(2)) if m else (1, line)
+    name = NAME_DECORATIONS.sub("", name).strip()
+    return (qty, name) if name else None
+
 
 def load_collection(out_dir: Path) -> tuple[str, dict[str, int]] | None:
     """Owned cards from _Collection.md next to the deck notes (override with
@@ -59,11 +73,37 @@ def load_collection(out_dir: Path) -> tuple[str, dict[str, int]] | None:
         return None
     owned: dict[str, int] = {}
     for line in path.read_text(encoding="utf-8-sig").splitlines():
-        m = re.match(r"(\d+)[xX]?\s+(.+)", line.strip())
-        if m:
-            name = m.group(2).strip().lower()
-            owned[name] = owned.get(name, 0) + int(m.group(1))
+        if not re.match(r"\d", line.strip()):
+            continue  # only 'N Card Name' lines count in a collection note
+        parsed = parse_card_line(line)
+        if parsed:
+            qty, name = parsed
+            owned[name.lower()] = owned.get(name.lower(), 0) + qty
     return path.name, owned
+
+
+def card_aliases(name: str) -> set[str]:
+    """All names a card can appear under: its canonical name plus Universes
+    Beyond flavor names (e.g. the Marvel precons print Spark Double as
+    "Loki's Double") — deck sources and collection lists may use either.
+    """
+    aliases = {name.lower()}
+    r = requests.get(SCRYFALL_NAMED, params={"exact": name},
+                     headers=HTTP_HEADERS, timeout=30)
+    time.sleep(0.1)
+    if r.status_code != 200:
+        return aliases
+    canonical = r.json()["name"]
+    aliases.add(canonical.lower())
+    s = requests.get(SCRYFALL_SEARCH,
+                     params={"q": f'!"{canonical}"', "unique": "prints"},
+                     headers=HTTP_HEADERS, timeout=30)
+    time.sleep(0.1)
+    if s.status_code == 200:
+        for c in s.json().get("data", []):
+            if c.get("flavor_name"):
+                aliases.add(c["flavor_name"].lower())
+    return aliases
 
 
 def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
@@ -76,7 +116,11 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
     owned_unique = owned_copies = total_copies = 0
     for qty, name in decklist:
         total_copies += qty
-        have = min(owned.get(name.lower(), 0), qty)
+        have = owned.get(name.lower(), 0)
+        if have < qty:
+            # Not obviously owned — check flavor-name aliases before giving up
+            have = sum(owned.get(a, 0) for a in card_aliases(name))
+        have = min(have, qty)
         owned_copies += have
         if have >= qty:
             owned_unique += 1
@@ -184,22 +228,25 @@ def fetch_textfile(path_str: str) -> dict:
     line, first card is the commander. Deck name = file name without .txt.
     """
     path = Path(path_str)
-    cards = []
+    cards: list[tuple[int, str]] = []
     for line in path.read_text(encoding="utf-8-sig").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        m = re.match(r"(\d+)[xX]?\s+(.*)", line)
-        cards.append((int(m.group(1)), m.group(2).strip()) if m else (1, line))
+        parsed = parse_card_line(line)
+        if parsed:
+            cards.append(parsed)
     if not cards:
         sys.exit(f"No cards found in {path}")
     commander = cards[0][1]
+    # Merge duplicate lines (Moxfield exports split printings onto separate rows)
+    merged: dict[str, int] = {}
+    for qty, name in cards[1:]:
+        if name != commander:
+            merged[name] = merged.get(name, 0) + qty
     return {
         "name": path.stem,
         "format": "Commander",
         "source_md": f"📄 `{path.name}`",
         "commanders": [commander],
-        "mainboard": [(q, n) for q, n in cards[1:] if n != commander],
+        "mainboard": [(q, n) for n, q in merged.items()],
     }
 
 
@@ -521,11 +568,14 @@ def main() -> None:
 
     primary = deck["commanders"][0]
     safe_name = ILLEGAL_FILENAME_CHARS.sub("", primary)
-    stem = f"{date.today().isoformat()}_MTG_{safe_name}"
 
-    note_path = out_dir / f"{stem}.md"
-    if note_path.exists() and not force:
-        sys.exit(f"Note already exists (use --force to overwrite): {note_path}")
+    # A deck note for this commander from ANY earlier date counts as existing —
+    # on --force it is updated in place (keeps its original dated filename)
+    existing = sorted(out_dir.glob(f"????-??-??_MTG_{safe_name}.md"))
+    if existing and not force:
+        sys.exit(f"Note already exists (use --force to overwrite): {existing[0]}")
+    note_path = existing[0] if existing else out_dir / f"{date.today().isoformat()}_MTG_{safe_name}.md"
+    stem = note_path.stem
 
     attachments_dir = out_dir / "Attachments"
     attachments_dir.mkdir(exist_ok=True)

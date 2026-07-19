@@ -26,7 +26,10 @@ For a `.txt` file: one `1 Card Name` per line (the usual export format),
 still come from Scryfall as normal.
 
 🛡️ An existing deck note is **never overwritten** (your review notes live in
-it) — pass `--force` to regenerate one anyway.
+it) — pass `--force` to regenerate one anyway. The guard matches on the
+commander regardless of import date, and `--force` updates the existing note
+in place (keeping its original dated filename) rather than creating a
+duplicate on a later day.
 
 ## 🗃️ Your collection & the shopping list
 
@@ -40,6 +43,13 @@ the cards you're missing (quantity-aware — owning 10 Mountains against a
 cost to complete the deck in EUR / USD / ≈ GBP. The owned count and buy
 totals also land in the frontmatter (`owned`, `buy-eur`, `buy-gbp`) for
 Dataview. No collection file? The section is simply skipped.
+
+🎭 **Flavor names are understood**: Universes Beyond precons print some cards
+under skinned names (the Marvel decks call Spark Double "Loki's Double") while
+deck sites report the canonical Magic name. Before declaring a card missing,
+the app checks all its aliases via Scryfall — so your collection can use
+whichever name is on the physical card. Moxfield export decorations (`*F*`
+foil markers, duplicate rows for different printings) are also handled.
 
 ## 📦 What you get
 
