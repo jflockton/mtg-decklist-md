@@ -309,8 +309,11 @@ def fetch_deck(url: str) -> dict:
     for pattern, fetcher in FETCHERS:
         if pattern.search(url):
             return fetcher(url)
-    if url.lower().endswith(".txt") and Path(url).is_file():
-        return fetch_textfile(url)
+    if url.lower().endswith(".txt"):
+        if Path(url).is_file():
+            return fetch_textfile(url)
+        sys.exit(f"Decklist file not found: {Path(url).resolve()}\n"
+                 "Check the spelling — the file must already exist.")
     supported = ", ".join(p.pattern.replace("\\", "") for p, _ in FETCHERS)
     sys.exit(f"Unsupported deck source: {url}\n"
              f"Supported: {supported}, or a path to a .txt decklist")
