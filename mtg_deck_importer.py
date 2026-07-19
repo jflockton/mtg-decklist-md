@@ -488,6 +488,7 @@ Completing the deck ≈ **€{buy["totals"]["eur"]:,.2f} · ${buy["totals"]["usd
 tags: [mtg, deck, commander]
 created: {today}
 commander: {commander_line}
+deck-name: {deck["name"]}
 deck-url: {deck_url}
 {price_frontmatter}
 price-date: {today}
@@ -569,12 +570,28 @@ def main() -> None:
     primary = deck["commanders"][0]
     safe_name = ILLEGAL_FILENAME_CHARS.sub("", primary)
 
-    # A deck note for this commander from ANY earlier date counts as existing —
-    # on --force it is updated in place (keeps its original dated filename)
-    existing = sorted(out_dir.glob(f"????-??-??_MTG_{safe_name}.md"))
-    if existing and not force:
-        sys.exit(f"Note already exists (use --force to overwrite): {existing[0]}")
-    note_path = existing[0] if existing else out_dir / f"{date.today().isoformat()}_MTG_{safe_name}.md"
+    # A commander can have several builds (precon + enhanced, etc.). A note is
+    # the SAME deck if its deck-url or deck-name matches; same-commander notes
+    # for a different build get a " - <deck name>" suffix instead of colliding.
+    match = None
+    for candidate in sorted(out_dir.glob(f"????-??-??_MTG_{safe_name}*.md")):
+        text = candidate.read_text(encoding="utf-8")
+        url_m = re.search(r"^deck-url: (.+)$", text, re.M)
+        name_m = (re.search(r"^deck-name: (.+)$", text, re.M)
+                  or re.search(r"^# 🃏 (.+)$", text, re.M))
+        if (url_m and url_m.group(1).strip() == deck_url) or \
+           (name_m and name_m.group(1).strip().lower() == deck["name"].lower()):
+            match = candidate
+            break
+    if match and not force:
+        sys.exit(f"Note already exists (use --force to overwrite): {match}")
+    if match:
+        note_path = match
+    else:
+        others = list(out_dir.glob(f"????-??-??_MTG_{safe_name}*.md"))
+        base = safe_name if not others else \
+            f"{safe_name} - {ILLEGAL_FILENAME_CHARS.sub('', deck['name'])}"
+        note_path = out_dir / f"{date.today().isoformat()}_MTG_{base}.md"
     stem = note_path.stem
 
     attachments_dir = out_dir / "Attachments"

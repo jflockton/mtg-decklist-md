@@ -26,10 +26,15 @@ For a `.txt` file: one `1 Card Name` per line (the usual export format),
 still come from Scryfall as normal.
 
 🛡️ An existing deck note is **never overwritten** (your review notes live in
-it) — pass `--force` to regenerate one anyway. The guard matches on the
-commander regardless of import date, and `--force` updates the existing note
-in place (keeping its original dated filename) rather than creating a
-duplicate on a later day.
+it) — pass `--force` to regenerate one anyway. A note counts as the *same
+deck* when its `deck-url` or `deck-name` matches, whatever the import date,
+and `--force` updates it in place (keeping its original dated filename).
+
+👥 **Multiple builds per commander** are fine: the first deck keeps the plain
+`YYYY-MM-DD_MTG_<Commander>.md` name, and a different build of the same
+commander (say, the precon plus your enhanced version) gets a
+`" - <deck name>"` suffix instead of colliding — so name your `.txt` files
+meaningfully (`Cloud Limit Break Precon.txt` → that becomes the deck name).
 
 ## 🗃️ Your collection & the shopping list
 
