@@ -86,28 +86,50 @@ def load_collection(out_dir: Path) -> tuple[str, dict[str, int]] | None:
     return path.name, owned
 
 
-def card_aliases(name: str) -> set[str]:
-    """All names a card can appear under: its canonical name plus Universes
-    Beyond flavor names (e.g. the Marvel precons print Spark Double as
-    "Loki's Double") — deck sources and collection lists may use either.
+_card_info_cache: dict[str, dict] = {}
+
+
+def card_prints_info(name: str) -> dict:
+    """One prints lookup per card, reused for two jobs: (a) every name the
+    card can appear under — canonical plus Universes Beyond flavor names
+    (the Marvel precons print Spark Double as "Loki's Double"); (b) the
+    cheapest paper printing, since a flavor-named skin is the same card and
+    the plain version is often cheaper.
     """
-    aliases = {name.lower()}
+    key = name.lower()
+    if key in _card_info_cache:
+        return _card_info_cache[key]
+    info = {"aliases": {key}, "canonical": name, "cheapest": None}
     r = requests.get(SCRYFALL_NAMED, params={"exact": name},
                      headers=HTTP_HEADERS, timeout=30)
     time.sleep(0.1)
-    if r.status_code != 200:
-        return aliases
-    canonical = r.json()["name"]
-    aliases.add(canonical.lower())
-    s = requests.get(SCRYFALL_SEARCH,
-                     params={"q": f'!"{canonical}"', "unique": "prints"},
-                     headers=HTTP_HEADERS, timeout=30)
-    time.sleep(0.1)
-    if s.status_code == 200:
-        for c in s.json().get("data", []):
-            if c.get("flavor_name"):
-                aliases.add(c["flavor_name"].lower())
-    return aliases
+    if r.status_code == 200:
+        info["canonical"] = r.json()["name"]
+        info["aliases"].add(info["canonical"].lower())
+        s = requests.get(
+            SCRYFALL_SEARCH,
+            params={"q": f'!"{info["canonical"]}" game:paper', "unique": "prints"},
+            headers=HTTP_HEADERS, timeout=30,
+        )
+        time.sleep(0.1)
+        if s.status_code == 200:
+            best = None
+            for c in s.json().get("data", []):
+                if c.get("flavor_name"):
+                    info["aliases"].add(c["flavor_name"].lower())
+                eur = float(c["prices"]["eur"]) if c["prices"].get("eur") else None
+                usd = float(c["prices"]["usd"]) if c["prices"].get("usd") else None
+                if eur is None and usd is None:
+                    continue
+                rank = (eur if eur is not None else float("inf"),
+                        usd if usd is not None else float("inf"))
+                if best is None or rank < best[0]:
+                    best = (rank, {"eur": eur, "usd": usd, "set": c["set_name"],
+                                   "printed_as": c.get("flavor_name") or c["name"]})
+            if best:
+                info["cheapest"] = best[1]
+    _card_info_cache[key] = info
+    return info
 
 
 def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
@@ -121,9 +143,11 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
     for qty, name in decklist:
         total_copies += qty
         have = owned.get(name.lower(), 0)
+        info = None
         if have < qty:
             # Not obviously owned — check flavor-name aliases before giving up
-            have = sum(owned.get(a, 0) for a in card_aliases(name))
+            info = card_prints_info(name)
+            have = sum(owned.get(a, 0) for a in info["aliases"])
         have = min(have, qty)
         owned_copies += have
         if have >= qty:
@@ -133,7 +157,7 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
         p = prices.get(name.lower()) or {}
         totals["eur"] += (p.get("eur") or 0) * need
         totals["usd"] += (p.get("usd") or 0) * need
-        missing.append((need, name, p.get("eur"), p.get("usd")))
+        missing.append((need, name, p.get("eur"), p.get("usd"), info))
     missing.sort(key=lambda c: c[2] or 0, reverse=True)
     return {"missing": missing, "totals": totals,
             "owned_unique": owned_unique, "owned_copies": owned_copies,
@@ -485,8 +509,42 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
             buy_gbp = gbp_cell(buy["totals"]["eur"] * rates["eur_gbp"] if rates else None)
             buy_rows = "\n".join(
                 f"| {name} | {need} | {money(eur, usd)[0]} | {money(eur, usd)[1]} | {gbp_cell(card_gbp(eur, usd))} |"
-                for need, name, eur, usd in buy["missing"]
+                for need, name, eur, usd, _ in buy["missing"]
             )
+
+            # Same card, cheaper printing (incl. plain-MTG versions of
+            # Universes Beyond skins) — worth a table when it saves anything
+            cheaper = []
+            best_total_eur = 0.0
+            for need, name, eur, usd, info in buy["missing"]:
+                ch = (info or {}).get("cheapest")
+                effective = eur
+                if ch and ch["eur"] is not None and (eur is None or ch["eur"] < eur - 0.005):
+                    label = ch["printed_as"] if ch["printed_as"].lower() != name.lower() \
+                        else info["canonical"]
+                    cheaper.append((name, label, ch["set"], ch["eur"], eur, need))
+                    effective = ch["eur"]
+                best_total_eur += (effective or 0) * need
+            cheaper_section = ""
+            if cheaper:
+                saved = buy["totals"]["eur"] - best_total_eur
+                cheaper_rows = "\n".join(
+                    f"| {name} | {label} ({set_name}) | €{cheap:,.2f} | {money(deck_eur, None)[0]} | €{(deck_eur or 0) - cheap:,.2f} |"
+                    for name, label, set_name, cheap, deck_eur, _ in cheaper
+                )
+                best_gbp = gbp_cell(best_total_eur * rates["eur_gbp"] if rates else None)
+                cheaper_section = f"""### 💡 Cheaper Printings
+
+Same card, different printing or name — Universes Beyond skins are only art
+and printed-name swaps, so the plain version is functionally identical.
+
+| Card in deck | Cheapest version (set) | EUR | Deck version | Save |
+|--------------|------------------------|----:|-------------:|-----:|
+{cheaper_rows}
+
+Buying the cheapest printings instead ≈ **€{best_total_eur:,.2f} · {best_gbp}** — saves **€{saved:,.2f}**.
+
+"""
             buy_section = f"""## 🛒 Cards to Buy
 
 {summary}
@@ -496,7 +554,7 @@ Completing the deck ≈ **€{buy["totals"]["eur"]:,.2f} · ${buy["totals"]["usd
 |------|-----:|----:|----:|------:|
 {buy_rows}
 
-"""
+{cheaper_section}"""
         else:
             buy_section = f"""## 🛒 Cards to Buy
 

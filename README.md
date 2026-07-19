@@ -66,6 +66,12 @@ the app checks all its aliases via Scryfall — so your collection can use
 whichever name is on the physical card. Moxfield export decorations (`*F*`
 foil markers, duplicate rows for different printings) are also handled.
 
+💡 **Cheaper Printings**: under Cards to Buy, a second table lists any missing
+card with a cheaper *functionally identical* version — another printing, or
+the plain-MTG/UB-skinned counterpart in either direction — with the set, the
+price gap, and a "buy the cheapest versions" total. Comes free with the alias
+lookup: no extra API calls.
+
 ## 📦 What you get
 
 Two files in your configured vault folder:
