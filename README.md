@@ -31,10 +31,14 @@ deck on re-import. Artwork and prices still come from Scryfall as normal.
 After a successful import the file is **moved to `./imports/`** (gitignored)
 as your record of what was imported; the note's `deck-url` points there.
 
-🛡️ An existing deck note is **never overwritten** (your review notes live in
-it) — pass `--force` to regenerate one anyway. A note counts as the *same
-deck* when its `deck-url` or `deck-name` matches, whatever the import date,
-and `--force` updates it in place (keeping its original dated filename).
+🛡️ An existing deck note is **never overwritten without `--force`** — and
+even then, **anything you've written in the review sections is preserved**:
+the regeneration refreshes the deck list, prices, and shopping list around
+your notes. A note counts as the *same deck* when its `deck-url` or
+`deck-name` matches, whatever the import date, and `--force` updates it in
+place (keeping its original dated filename). So the update-a-deck workflow
+is simply: change the deck (on the site, or edit the txt in `imports/`),
+re-run with `--force`, done.
 
 👥 **Multiple builds per commander** are fine: the first deck keeps the plain
 `YYYY-MM-DD_MTG_<Commander>.md` name, and a different build of the same

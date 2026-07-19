@@ -441,9 +441,28 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
             "rates": fx_rates()}
 
 
+REVIEW_SECTIONS = ["🧠 First Impressions", "💪 Strengths", "⚠️ Weaknesses",
+                   "🔄 Cards to Consider Swapping", "📝 Play Notes"]
+
+
+def extract_reviews(text: str) -> dict[str, str]:
+    """Pull hand-written review content out of an existing note so a --force
+    regeneration refreshes the data without destroying your thoughts.
+    """
+    reviews = {}
+    for heading in REVIEW_SECTIONS:
+        m = re.search(rf"## {re.escape(heading)}\n(.*?)(?=\n## )", text, re.S)
+        if m:
+            body = m.group(1).strip()
+            if body and body != "-":
+                reviews[heading] = body
+    return reviews
+
+
 def build_note(deck: dict, decklist: list[tuple[int, str]],
                image_url: str, deck_url: str, report: dict,
-               buy: dict | None, collection_name: str | None) -> str:
+               buy: dict | None, collection_name: str | None,
+               reviews: dict[str, str]) -> str:
     today = date.today().isoformat()
     commander_line = ", ".join(deck["commanders"])
     listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
@@ -502,6 +521,10 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
     unpriced_note = (
         f"\n> ⚠️ No price found for {len(report['unpriced'])} card(s): "
         + ", ".join(report["unpriced"]) if report["unpriced"] else ""
+    )
+
+    review_block = "\n\n".join(
+        f"## {heading}\n\n{reviews.get(heading, '-')}" for heading in REVIEW_SECTIONS
     )
 
     buy_section = ""
@@ -595,25 +618,7 @@ price-date: {today}
 
 ![{commander_line}|290]({image_url})
 
-## 🧠 First Impressions
-
--
-
-## 💪 Strengths
-
--
-
-## ⚠️ Weaknesses
-
--
-
-## 🔄 Cards to Consider Swapping
-
--
-
-## 📝 Play Notes
-
--
+{review_block}
 
 {buy_section}## 🏆 Priciest Cards
 
@@ -708,8 +713,14 @@ def main() -> None:
         collection_name, owned = collection
         buy = buy_report(decklist, owned, prices)
 
+    reviews = extract_reviews(note_path.read_text(encoding="utf-8")) \
+        if note_path.exists() else {}
+    if reviews:
+        print(f"Preserved: your written content in {len(reviews)} review section(s)")
+
     note_path.write_text(
-        build_note(deck, decklist, image_url, deck_url, report, buy, collection_name),
+        build_note(deck, decklist, image_url, deck_url, report, buy,
+                   collection_name, reviews),
         encoding="utf-8",
     )
 
