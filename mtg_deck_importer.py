@@ -31,6 +31,7 @@ Output note:  YYYY-MM-DD_MTG_<Commander Name>.md
 Output image: Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg
 """
 
+import atexit
 import json
 import os
 import re
@@ -96,6 +97,42 @@ def load_collection(out_dir: Path) -> tuple[str, dict[str, int]] | None:
 
 
 _card_info_cache: dict[str, dict] = {}
+_prints_cache_loaded = False
+_prints_cache_dirty = False
+PRINTS_CACHE = SCRIPT_DIR / ".cache" / "scryfall_prints.json"
+PRINTS_TTL = 72 * 3600  # prices drift slowly; 3 days is fine for budget hints
+
+
+def _load_prints_cache() -> None:
+    global _prints_cache_loaded
+    _prints_cache_loaded = True
+    try:
+        raw = json.loads(PRINTS_CACHE.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    now = time.time()
+    for key, val in raw.items():
+        if now - val.get("ts", 0) < PRINTS_TTL:
+            _card_info_cache[key] = {"aliases": set(val["aliases"]),
+                                     "canonical": val["canonical"],
+                                     "cheapest": val["cheapest"],
+                                     "ts": val["ts"]}
+
+
+def _save_prints_cache() -> None:
+    if not _prints_cache_dirty:
+        return
+    try:
+        PRINTS_CACHE.parent.mkdir(exist_ok=True)
+        out = {k: {"aliases": sorted(v["aliases"]), "canonical": v["canonical"],
+                   "cheapest": v["cheapest"], "ts": v.get("ts", time.time())}
+               for k, v in _card_info_cache.items()}
+        PRINTS_CACHE.write_text(json.dumps(out), encoding="utf-8")
+    except Exception:
+        pass
+
+
+atexit.register(_save_prints_cache)
 
 
 def card_prints_info(name: str) -> dict:
@@ -105,10 +142,15 @@ def card_prints_info(name: str) -> dict:
     cheapest paper printing, since a flavor-named skin is the same card and
     the plain version is often cheaper.
     """
+    if not _prints_cache_loaded:
+        _load_prints_cache()
     key = name.lower()
     if key in _card_info_cache:
         return _card_info_cache[key]
-    info = {"aliases": {key}, "canonical": name, "cheapest": None}
+    global _prints_cache_dirty
+    _prints_cache_dirty = True
+    info = {"aliases": {key}, "canonical": name, "cheapest": None,
+            "ts": time.time()}
     r = http("GET", SCRYFALL_NAMED, params={"exact": name})
     time.sleep(0.1)
     if r.status_code == 200:
@@ -619,7 +661,7 @@ def extract_reviews(text: str) -> dict[str, str]:
 def build_note(deck: dict, decklist: list[tuple[int, str]],
                image_url: str, deck_url: str, report: dict,
                buy: dict | None, collection_name: str | None,
-               reviews: dict[str, str]) -> str:
+               reviews: dict[str, str], budget_section: str) -> str:
     today = date.today().isoformat()
     commander_line = ", ".join(deck["commanders"])
     listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
@@ -660,7 +702,8 @@ price-date: {today}
 ```
 {listing}
 ```
-"""
+
+{budget_section}"""
 
 
 def render_value_block(report: dict, today: str) -> str:
@@ -716,6 +759,59 @@ Per-card prices (×N marks multiples — basics etc.; the price shown is per cop
 |------|----:|----:|-----:|------:|
 {all_rows}
 {unpriced_note}
+"""
+
+
+def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
+                       report: dict) -> str:
+    """Full deck list where every card is shown at its cheapest
+    functionally-identical version (any printing/name, incl. ManaPool's
+    cheapest live listing). Bulk under €0.50 keeps the deck's own version —
+    there's nothing meaningful to save on pennies.
+    """
+    rates = report["rates"]
+    rows = []
+    totals = {"eur": 0.0, "mp": 0.0, "best_gbp": 0.0}
+    for qty, name in decklist:
+        p = prices.get(name.lower()) or {}
+        deck_eur, mp = p.get("eur"), p.get("mp")
+        label, eur = f"{name}", deck_eur
+        worth_checking = (deck_eur or p.get("usd") or 0) > 0.50
+        if worth_checking:
+            info = card_prints_info(name)
+            ch = info.get("cheapest")
+            if ch and ch["eur"] is not None and (deck_eur is None or ch["eur"] < deck_eur):
+                eur = ch["eur"]
+                printed = ch["printed_as"] if ch["printed_as"].lower() != name.lower() \
+                    else name
+                label = f"{printed} ({ch['set']})"
+        gbp_candidates = []
+        if rates:
+            if eur is not None:
+                gbp_candidates.append(eur * rates["eur_gbp"])
+            if mp is not None:
+                gbp_candidates.append(mp * rates["usd_gbp"])
+        best_gbp = min(gbp_candidates) if gbp_candidates else None
+        totals["eur"] += (eur or 0) * qty
+        totals["mp"] += (mp or 0) * qty
+        totals["best_gbp"] += (best_gbp or 0) * qty
+        rows.append(
+            f"| {label}{f' ×{qty}' if qty > 1 else ''} | "
+            f"{_money(eur, None)[0]} | {_usd_cell(mp)} | {_gbp_cell(best_gbp)} |"
+        )
+    body = "\n".join(rows)
+    return f"""## 💸 Cheapest Build
+
+The whole deck with every card at its cheapest functionally-identical version
+— other printings and Universes Beyond/plain-name swaps included. EUR is the
+cheapest Cardmarket printing, MP $ the cheapest ManaPool listing, ≈ GBP the
+cheaper of the two converted. Cards under €0.50 keep the deck's own version.
+
+| Card (cheapest version) | EUR | MP $ | ≈ GBP |
+|-------------------------|----:|-----:|------:|
+{body}
+
+Whole deck at cheapest versions ≈ **€{totals["eur"]:,.2f} · MP ${totals["mp"]:,.2f} · best mix ≈ {_gbp_cell(totals["best_gbp"] if rates else None)}**.
 """
 
 
@@ -784,6 +880,13 @@ def recheck_all(out_dir: Path) -> None:
         text = text.replace("\nprice-date:", f"\n{fm}\nprice-date:", 1)
         text = re.sub(r"^price-date: .*$", f"price-date: {today}", text,
                       count=1, flags=re.M)
+        # Cheapest Build (sits at the very bottom — replace or append)
+        budget_section = render_budget_list(decklist, prices, report)
+        if "## 💸 Cheapest Build" in text:
+            text = re.sub(r"## 💸 Cheapest Build\n.*\Z",
+                          lambda _: budget_section, text, count=1, flags=re.S)
+        else:
+            text = text.rstrip("\n") + "\n\n" + budget_section
 
         note.write_text(text, encoding="utf-8")
         print(f"{note.name}: value ~EUR {report['totals']['eur']:,.2f}"
@@ -874,9 +977,10 @@ def main() -> None:
     if reviews:
         print(f"Preserved: your written content in {len(reviews)} review section(s)")
 
+    budget_section = render_budget_list(decklist, prices, report)
     note_path.write_text(
         build_note(deck, decklist, image_url, deck_url, report, buy,
-                   collection_name, reviews),
+                   collection_name, reviews, budget_section),
         encoding="utf-8",
     )
 

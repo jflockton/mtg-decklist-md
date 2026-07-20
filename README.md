@@ -106,6 +106,11 @@ Two files in your configured vault folder:
     price table shows native EUR / USD plus ≈ GBP
   - 📜 **Deck List** — commander first, then mainboard alphabetically, one
     `1 Card Name` per line (pastes straight back into Moxfield / Arena)
+  - 💸 **Cheapest Build** — the whole deck again with every card at its
+    cheapest functionally-identical version (other printings, UB/plain-name
+    swaps, ManaPool's cheapest listing) with a best-mix total; cards under
+    €0.50 keep the deck's own version. Printing lookups are cached for 3
+    days in `.cache/`, so only the first run after a quiet spell is slow.
 - 🎨 `Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg` — the commander card
   from Scryfall (the `Attachments` subfolder is created if missing)
 
