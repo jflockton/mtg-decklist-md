@@ -562,6 +562,18 @@ def _usd_cell(amount):
     return f"${amount:,.2f}" if amount is not None else "—"
 
 
+def _sane_cheaper(cheap_eur, deck_eur):
+    """Guard against junk market data: a 'cheapest printing' under 5% of the
+    deck version's price on a card worth over €1 (e.g. a €0.02 Summer Magic
+    Wrath of God) is a data error, not a bargain.
+    """
+    if cheap_eur is None:
+        return False
+    if deck_eur and deck_eur > 1 and cheap_eur < deck_eur * 0.05:
+        return False
+    return deck_eur is None or cheap_eur < deck_eur - 0.005
+
+
 def _card_gbp(eur, usd, rates):
     # Prefer the Cardmarket EUR price; fall back to USD if only that exists
     if not rates:
@@ -606,7 +618,7 @@ def render_buy_section(buy: dict, collection_name: str, rates: dict | None) -> s
     for need, name, eur, usd, _mp, info in buy["missing"]:
         ch = (info or {}).get("cheapest")
         effective = eur
-        if ch and ch["eur"] is not None and (eur is None or ch["eur"] < eur - 0.005):
+        if ch and _sane_cheaper(ch["eur"], eur):
             label = ch["printed_as"] if ch["printed_as"].lower() != name.lower() \
                 else info["canonical"]
             cheaper.append((name, label, ch["set"], ch["eur"], eur, need))
@@ -780,7 +792,7 @@ def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
         if worth_checking:
             info = card_prints_info(name)
             ch = info.get("cheapest")
-            if ch and ch["eur"] is not None and (deck_eur is None or ch["eur"] < deck_eur):
+            if ch and _sane_cheaper(ch["eur"], deck_eur):
                 eur = ch["eur"]
                 printed = ch["printed_as"] if ch["printed_as"].lower() != name.lower() \
                     else name
