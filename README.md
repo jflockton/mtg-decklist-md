@@ -108,7 +108,9 @@ Two files in your configured vault folder:
     `1 Card Name` per line (pastes straight back into Moxfield / Arena)
   - 💸 **Cheapest Build** — the whole deck again with every card at its
     cheapest functionally-identical version (other printings, UB/plain-name
-    swaps, ManaPool's cheapest listing) with a best-mix total; cards under
+    swaps, ManaPool's cheapest listing) with a best-mix total, plus a
+    **copy-paste deck list** of those cheapest versions with `(SET)` codes
+    pinning the exact printings (Moxfield's import format). Cards under
     €0.50 keep the deck's own version. Printing lookups are cached for 3
     days in `.cache/`, so only the first run after a quiet spell is slow.
 - 🎨 `Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg` — the commander card

@@ -782,6 +782,32 @@ Per-card prices (×N marks multiples — basics etc.; the price shown is per cop
 """
 
 
+SETS_CACHE = SCRIPT_DIR / ".cache" / "scryfall_sets.json"
+_sets_map: dict[str, str] | None = None
+
+
+def set_code_map() -> dict[str, str]:
+    """Set name -> set code (e.g. 'Commander 2021' -> 'c21'), cached weekly."""
+    global _sets_map
+    if _sets_map is not None:
+        return _sets_map
+    try:
+        stale = (not SETS_CACHE.is_file()
+                 or time.time() - SETS_CACHE.stat().st_mtime > 7 * 86400)
+        if stale:
+            r = http("GET", "https://api.scryfall.com/sets")
+            r.raise_for_status()
+            SETS_CACHE.parent.mkdir(exist_ok=True)
+            SETS_CACHE.write_text(
+                json.dumps({s["name"]: s["code"] for s in r.json()["data"]}),
+                encoding="utf-8")
+        _sets_map = {k.lower(): v for k, v in
+                     json.loads(SETS_CACHE.read_text(encoding="utf-8")).items()}
+    except Exception:
+        _sets_map = {}
+    return _sets_map
+
+
 def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
                        report: dict) -> str:
     """Full deck list where every card is shown at its cheapest
@@ -791,11 +817,13 @@ def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
     """
     rates = report["rates"]
     rows = []
+    list_lines = []
     totals = {"eur": 0.0, "mp": 0.0, "best_gbp": 0.0}
     for qty, name in decklist:
         p = prices.get(name.lower()) or {}
         deck_eur, mp = p.get("eur"), p.get("mp")
         label, eur = f"{name}", deck_eur
+        list_line = f"{qty} {name}"
         worth_checking = (deck_eur or p.get("usd") or 0) > 0.50
         if worth_checking:
             info = card_prints_info(name)
@@ -805,6 +833,9 @@ def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
                 printed = ch["printed_as"] if ch["printed_as"].lower() != name.lower() \
                     else name
                 label = f"{printed} ({ch['set']})"
+                code = set_code_map().get(ch["set"].lower())
+                list_line = f"{qty} {printed} ({code.upper()})" if code \
+                    else f"{qty} {printed}"
         gbp_candidates = []
         if rates:
             if eur is not None:
@@ -819,7 +850,9 @@ def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
             f"| {label}{f' ×{qty}' if qty > 1 else ''} | "
             f"{_money(eur, None)[0]} | {_usd_cell(mp)} | {_gbp_cell(best_gbp)} |"
         )
+        list_lines.append(list_line)
     body = "\n".join(rows)
+    listing = "\n".join(list_lines)
     return f"""## 💸 Cheapest Build
 
 The whole deck with every card at its cheapest functionally-identical version
@@ -832,6 +865,15 @@ cheaper of the two converted. Cards under €0.50 keep the deck's own version.
 {body}
 
 Whole deck at cheapest versions ≈ **€{totals["eur"]:,.2f} · MP ${totals["mp"]:,.2f} · best mix ≈ {_gbp_cell(totals["best_gbp"] if rates else None)}**.
+
+### 📋 Cheapest Build List
+
+Copy-paste list of the cheapest versions — `(SET)` pins the exact printing
+(Moxfield understands this format); lines without a code use any printing.
+
+```
+{listing}
+```
 """
 
 
