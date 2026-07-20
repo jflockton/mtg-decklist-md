@@ -52,7 +52,9 @@ SCRYFALL_COLLECTION = "https://api.scryfall.com/cards/collection"
 SCRYFALL_SEARCH = "https://api.scryfall.com/cards/search"
 ECB_RATES = "https://api.frankfurter.dev/v1/latest"
 MANAPOOL_PRICES = "https://manapool.com/api/v1/prices/singles"
-MANAPOOL_CACHE = SCRIPT_DIR / "manapool_prices.json"
+# Cache lives in .cache/ so tab-completing "m..." never hands the JSON file
+# to python by mistake (it sorts before mtg_deck_importer.py otherwise)
+MANAPOOL_CACHE = SCRIPT_DIR / ".cache" / "manapool_prices.json"
 MOXFIELD_API = "https://api2.moxfield.com/v3/decks/all/{deck_id}"
 
 # Windows-illegal filename characters (commas are fine and kept)
@@ -199,6 +201,10 @@ def manapool_index() -> dict[str, float]:
     field = {"any": "price_cents", "lp": "price_cents_lp_plus",
              "nm": "price_cents_nm"}.get(cond, "price_cents_lp_plus")
     try:
+        MANAPOOL_CACHE.parent.mkdir(exist_ok=True)
+        legacy = SCRIPT_DIR / "manapool_prices.json"
+        if legacy.is_file() and not MANAPOOL_CACHE.is_file():
+            legacy.replace(MANAPOOL_CACHE)
         stale = (not MANAPOOL_CACHE.is_file()
                  or time.time() - MANAPOOL_CACHE.stat().st_mtime > 86400)
         if stale:
