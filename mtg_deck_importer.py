@@ -105,17 +105,14 @@ def card_prints_info(name: str) -> dict:
     if key in _card_info_cache:
         return _card_info_cache[key]
     info = {"aliases": {key}, "canonical": name, "cheapest": None}
-    r = requests.get(SCRYFALL_NAMED, params={"exact": name},
-                     headers=HTTP_HEADERS, timeout=30)
+    r = http("GET", SCRYFALL_NAMED, params={"exact": name})
     time.sleep(0.1)
     if r.status_code == 200:
         info["canonical"] = r.json()["name"]
         info["aliases"].add(info["canonical"].lower())
-        s = requests.get(
-            SCRYFALL_SEARCH,
-            params={"q": f'!"{info["canonical"]}" game:paper', "unique": "prints"},
-            headers=HTTP_HEADERS, timeout=30,
-        )
+        s = http("GET", SCRYFALL_SEARCH,
+                 params={"q": f'!"{info["canonical"]}" game:paper',
+                         "unique": "prints"})
         time.sleep(0.1)
         if s.status_code == 200:
             best = None
@@ -167,6 +164,18 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
     return {"missing": missing, "totals": totals,
             "owned_unique": owned_unique, "owned_copies": owned_copies,
             "unique": len(decklist), "total_copies": total_copies}
+
+
+def http(method: str, url: str, **kwargs) -> requests.Response:
+    """Request with polite backoff on 429/5xx — Scryfall rate-limits bursts."""
+    r = None
+    for attempt in range(5):
+        r = requests.request(method, url, headers=HTTP_HEADERS, timeout=30, **kwargs)
+        if r.status_code == 429 or r.status_code >= 500:
+            time.sleep(float(r.headers.get("Retry-After", 2)) + attempt)
+            continue
+        return r
+    return r
 
 
 def collection_path(out_dir: Path) -> Path:
@@ -335,14 +344,13 @@ def fetch_commander_art(commander: str, dest: Path) -> str:
     viewer, not just Obsidian.
     """
     # Scryfall rejects requests without proper User-Agent/Accept headers
-    r = requests.get(SCRYFALL_NAMED, params={"exact": commander},
-                     headers=HTTP_HEADERS, timeout=30)
+    r = http("GET", SCRYFALL_NAMED, params={"exact": commander})
     r.raise_for_status()
     card = r.json()
     # Double-faced cards keep image_uris per face
     image_uris = card.get("image_uris") or card["card_faces"][0]["image_uris"]
     time.sleep(0.1)  # Scryfall asks for ~10 requests/sec max
-    img = requests.get(image_uris["normal"], headers=HTTP_HEADERS, timeout=30)
+    img = http("GET", image_uris["normal"])
     img.raise_for_status()
     dest.write_bytes(img.content)
     return image_uris["normal"]
@@ -356,11 +364,8 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
     prices: dict[str, dict] = {}
     for i in range(0, len(names), 75):  # collection endpoint caps at 75 cards
         chunk = names[i:i + 75]
-        r = requests.post(
-            SCRYFALL_COLLECTION,
-            json={"identifiers": [{"name": n} for n in chunk]},
-            headers=HTTP_HEADERS, timeout=30,
-        )
+        r = http("POST", SCRYFALL_COLLECTION,
+                 json={"identifiers": [{"name": n} for n in chunk]})
         r.raise_for_status()
         for card in r.json().get("data", []):
             p = card.get("prices", {})
@@ -391,11 +396,8 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
 
 
 def cheapest_paper_printing(name: str) -> dict | None:
-    r = requests.get(
-        SCRYFALL_SEARCH,
-        params={"q": f'!"{name}" game:paper', "unique": "prints"},
-        headers=HTTP_HEADERS, timeout=30,
-    )
+    r = http("GET", SCRYFALL_SEARCH,
+             params={"q": f'!"{name}" game:paper', "unique": "prints"})
     if r.status_code != 200:
         return None
     printings = r.json().get("data", [])
@@ -562,71 +564,15 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
     today = date.today().isoformat()
     commander_line = ", ".join(deck["commanders"])
     listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
-    totals = report["totals"]
-    coverage = report["coverage"]
-    unique = report["unique"]
 
-    def money(eur, usd):
-        e = f"€{eur:,.2f}" if eur is not None else "—"
-        u = f"${usd:,.2f}" if usd is not None else "—"
-        return e, u
-
-    rates = report["rates"]
-
-    def gbp_cell(amount):
-        return f"£{amount:,.2f}" if amount is not None else "—"
-
-    # tix trade at roughly $1 each on MTGO, so they convert via the USD rate
-    source_rows = [
-        ("🇪🇺 Cardmarket", f"€{totals['eur']:,.2f}",
-         totals["eur"] * rates["eur_gbp"] if rates else None, coverage["eur"]),
-        ("🇺🇸 TCGPlayer", f"${totals['usd']:,.2f}",
-         totals["usd"] * rates["usd_gbp"] if rates else None, coverage["usd"]),
-        ("🖥️ Cardhoarder (MTGO)", f"{totals['tix']:,.2f} tix",
-         totals["tix"] * rates["usd_gbp"] if rates else None, coverage["tix"]),
-    ]
-    value_rows = "\n".join(
-        f"| {label} | {native} | {gbp_cell(gbp)} | {cov}/{unique} |"
-        for label, native, gbp, cov in source_rows
-    )
-    fm_prices = {"eur": totals["eur"]}
-    if rates:
-        fm_prices["gbp"] = totals["eur"] * rates["eur_gbp"]
-    fm_prices["usd"] = totals["usd"]
-    fm_prices["tix"] = totals["tix"]
-    price_frontmatter = "\n".join(f"price-{k}: {v:.2f}" for k, v in fm_prices.items())
-
-    def card_gbp(eur, usd):
-        # Prefer the Cardmarket EUR price; fall back to USD if only that exists
-        if not rates:
-            return None
-        if eur is not None:
-            return eur * rates["eur_gbp"]
-        if usd is not None:
-            return usd * rates["usd_gbp"]
-        return None
-
-    top_rows = "\n".join(
-        f"| {name} | {money(eur, usd)[0]} | {money(eur, usd)[1]} | {gbp_cell(card_gbp(eur, usd))} |"
-        for name, eur, usd in report["top"]
-    )
-    all_rows = "\n".join(
-        f"| {name}{f' ×{qty}' if qty > 1 else ''} | {money(eur, usd)[0]} | {money(eur, usd)[1]} | {gbp_cell(card_gbp(eur, usd))} |"
-        for qty, name, eur, usd in report["all"]
-    )
-    unpriced_note = (
-        f"\n> ⚠️ No price found for {len(report['unpriced'])} card(s): "
-        + ", ".join(report["unpriced"]) if report["unpriced"] else ""
-    )
-
+    price_frontmatter = price_frontmatter_str(report)
+    if buy is not None:
+        price_frontmatter += "\n" + buy_frontmatter(buy, report["rates"])
+    buy_section = render_buy_section(buy, collection_name, report["rates"]) \
+        if buy is not None else ""
     review_block = "\n\n".join(
         f"## {heading}\n\n{reviews.get(heading, '-')}" for heading in REVIEW_SECTIONS
     )
-
-    buy_section = ""
-    if buy is not None:
-        buy_section = render_buy_section(buy, collection_name, rates)
-        price_frontmatter += "\n" + buy_frontmatter(buy, rates)
 
     return f"""---
 tags: [mtg, deck, commander]
@@ -644,17 +590,58 @@ price-date: {today}
 **Format:** {deck["format"]}
 **Source:** {deck["source_md"]}
 
-| Source | Value | ≈ GBP | Cards priced |
-|--------|------:|------:|-------------:|
-{value_rows}
-
-*💰 Standard (non-foil) cards, Scryfall daily snapshot ({today}). ≈ GBP is rough — ECB reference rates via frankfurter.dev; 1 tix ≈ $1.*
+{render_value_block(report, today)}
 
 ![{commander_line}|290]({image_url})
 
 {review_block}
 
-{buy_section}## 🏆 Priciest Cards
+{buy_section}{render_card_tables(report)}## 📜 Deck List
+
+```
+{listing}
+```
+"""
+
+
+def render_value_block(report: dict, today: str) -> str:
+    totals, coverage = report["totals"], report["coverage"]
+    unique, rates = report["unique"], report["rates"]
+    # tix trade at roughly $1 each on MTGO, so they convert via the USD rate
+    source_rows = [
+        ("🇪🇺 Cardmarket", f"€{totals['eur']:,.2f}",
+         totals["eur"] * rates["eur_gbp"] if rates else None, coverage["eur"]),
+        ("🇺🇸 TCGPlayer", f"${totals['usd']:,.2f}",
+         totals["usd"] * rates["usd_gbp"] if rates else None, coverage["usd"]),
+        ("🖥️ Cardhoarder (MTGO)", f"{totals['tix']:,.2f} tix",
+         totals["tix"] * rates["usd_gbp"] if rates else None, coverage["tix"]),
+    ]
+    value_rows = "\n".join(
+        f"| {label} | {native} | {_gbp_cell(gbp)} | {cov}/{unique} |"
+        for label, native, gbp, cov in source_rows
+    )
+    return f"""| Source | Value | ≈ GBP | Cards priced |
+|--------|------:|------:|-------------:|
+{value_rows}
+
+*💰 Standard (non-foil) cards, Scryfall daily snapshot ({today}). ≈ GBP is rough — ECB reference rates via frankfurter.dev; 1 tix ≈ $1.*"""
+
+
+def render_card_tables(report: dict) -> str:
+    rates = report["rates"]
+    top_rows = "\n".join(
+        f"| {name} | {_money(eur, usd)[0]} | {_money(eur, usd)[1]} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
+        for name, eur, usd in report["top"]
+    )
+    all_rows = "\n".join(
+        f"| {name}{f' ×{qty}' if qty > 1 else ''} | {_money(eur, usd)[0]} | {_money(eur, usd)[1]} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
+        for qty, name, eur, usd in report["all"]
+    )
+    unpriced_note = (
+        f"\n> ⚠️ No price found for {len(report['unpriced'])} card(s): "
+        + ", ".join(report["unpriced"]) if report["unpriced"] else ""
+    )
+    return f"""## 🏆 Priciest Cards
 
 | Card | EUR | USD | ≈ GBP |
 |------|----:|----:|------:|
@@ -668,24 +655,30 @@ Per-card prices (×N marks multiples — basics etc.; the price shown is per cop
 |------|----:|----:|------:|
 {all_rows}
 {unpriced_note}
-## 📜 Deck List
-
-```
-{listing}
-```
 """
 
 
+def price_frontmatter_str(report: dict) -> str:
+    totals, rates = report["totals"], report["rates"]
+    fm_prices = {"eur": totals["eur"]}
+    if rates:
+        fm_prices["gbp"] = totals["eur"] * rates["eur_gbp"]
+    fm_prices["usd"] = totals["usd"]
+    fm_prices["tix"] = totals["tix"]
+    return "\n".join(f"price-{k}: {v:.2f}" for k, v in fm_prices.items())
+
+
 def recheck_all(out_dir: Path) -> None:
-    """Re-run only the collection comparison for every deck note, using the
-    deck list stored in the note itself — no site fetching, no browser.
-    Rewrites the Cards to Buy section and its frontmatter fields in place.
+    """Refresh every deck note's price data and collection comparison using
+    the deck list stored in the note itself — no site fetching, no browser.
+    Rewrites the value table, price tables, Cards to Buy, and frontmatter;
+    review sections and everything else stay untouched.
     """
     collection = load_collection(out_dir)
     if not collection:
         sys.exit(f"No collection file found at {collection_path(out_dir)}")
     collection_name, owned = collection
-    rates = fx_rates()
+    today = date.today().isoformat()
     notes = sorted(out_dir.glob("????-??-??_MTG_*.md"))
     if not notes:
         sys.exit(f"No deck notes found in {out_dir}")
@@ -702,20 +695,37 @@ def recheck_all(out_dir: Path) -> None:
             if parsed:
                 decklist.append(parsed)
         prices = fetch_prices([n for _, n in decklist])
+        report = price_report(decklist, prices)
         buy = buy_report(decklist, owned, prices)
-        section = render_buy_section(buy, collection_name, rates)
+        rates = report["rates"]
 
+        # Deck value table + caption (tolerate Obsidian's table re-padding)
+        text = re.sub(r"\| Source\s*\|\s*Value\s*\|.*?\*💰[^\n]*\*",
+                      lambda _: render_value_block(report, today), text,
+                      count=1, flags=re.S)
+        # Priciest / All Card Prices tables
+        text = re.sub(r"## 🏆 Priciest Cards\n.*?(?=## 📜 Deck List)",
+                      lambda _: render_card_tables(report), text,
+                      count=1, flags=re.S)
+        # Cards to Buy
+        buy_sec = render_buy_section(buy, collection_name, rates)
         if "## 🛒 Cards to Buy" in text:
             text = re.sub(r"## 🛒 Cards to Buy\n.*?(?=## 🏆 Priciest Cards)",
-                          section, text, count=1, flags=re.S)
+                          lambda _: buy_sec, text, count=1, flags=re.S)
         else:
             text = text.replace("## 🏆 Priciest Cards",
-                                section + "## 🏆 Priciest Cards", 1)
-        text = re.sub(r"^(owned|buy-eur|buy-gbp): .*\n", "", text, flags=re.M)
-        text = text.replace("\nprice-date:",
-                            "\n" + buy_frontmatter(buy, rates) + "\nprice-date:", 1)
+                                buy_sec + "## 🏆 Priciest Cards", 1)
+        # Frontmatter: rebuild all price/owned/buy fields, stamp price-date
+        text = re.sub(r"^(price-(eur|gbp|usd|tix)|owned|buy-eur|buy-gbp): .*\n",
+                      "", text, flags=re.M)
+        fm = price_frontmatter_str(report) + "\n" + buy_frontmatter(buy, rates)
+        text = text.replace("\nprice-date:", f"\n{fm}\nprice-date:", 1)
+        text = re.sub(r"^price-date: .*$", f"price-date: {today}", text,
+                      count=1, flags=re.M)
+
         note.write_text(text, encoding="utf-8")
-        print(f"{note.name}: own {buy['owned_unique']}/{buy['unique']}"
+        print(f"{note.name}: value ~EUR {report['totals']['eur']:,.2f}"
+              f" — own {buy['owned_unique']}/{buy['unique']}"
               f" — to buy {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f})")
 
 

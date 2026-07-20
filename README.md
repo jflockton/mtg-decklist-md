@@ -15,11 +15,14 @@ python mtg_deck_importer.py "path/to/My Deck Name.txt"
 Flags: `--force` regenerates an existing note; `--own` adds the whole deck
 to your collection (see below).
 
-**Updated your collection?** `python mtg_deck_importer.py --recheck` (no URL)
-refreshes the 🛒 Cards to Buy section of *every* deck note against the
-current `_Collection.md`, using the deck list stored in each note — no site
-fetching, no browser windows, nothing else in the notes is touched. Works
-even for decks whose original source is gone.
+**Updated your collection (or just want fresh prices)?**
+`python mtg_deck_importer.py --recheck` (no URL) refreshes *every* deck note
+— deck value table, Priciest/All Card Prices, and the 🛒 Cards to Buy
+comparison against the current `_Collection.md` — using the deck list stored
+in each note. No site fetching, no browser windows; review sections and the
+deck list itself are untouched. Works even for decks whose original source
+is gone. (Scryfall rate-limits heavy bursts; the app backs off and retries,
+so a big library can take a few minutes.)
 
 ## 🌐 Supported sources
 
