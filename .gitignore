@@ -5,3 +5,5 @@ __pycache__/
 imports/
 manapool_prices.json
 .cache/
+*.txt
+!requirements.txt
