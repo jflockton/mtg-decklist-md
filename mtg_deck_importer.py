@@ -51,6 +51,8 @@ SCRYFALL_NAMED = "https://api.scryfall.com/cards/named"
 SCRYFALL_COLLECTION = "https://api.scryfall.com/cards/collection"
 SCRYFALL_SEARCH = "https://api.scryfall.com/cards/search"
 ECB_RATES = "https://api.frankfurter.dev/v1/latest"
+MANAPOOL_PRICES = "https://manapool.com/api/v1/prices/singles"
+MANAPOOL_CACHE = SCRIPT_DIR / "manapool_prices.json"
 MOXFIELD_API = "https://api2.moxfield.com/v3/decks/all/{deck_id}"
 
 # Windows-illegal filename characters (commas are fine and kept)
@@ -140,7 +142,7 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
     costs (per-source totals use the already-fetched deck prices).
     """
     missing = []
-    totals = {"eur": 0.0, "usd": 0.0}
+    totals = {"eur": 0.0, "usd": 0.0, "mp": 0.0}
     owned_unique = owned_copies = total_copies = 0
     for qty, name in decklist:
         total_copies += qty
@@ -159,7 +161,8 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
         p = prices.get(name.lower()) or {}
         totals["eur"] += (p.get("eur") or 0) * need
         totals["usd"] += (p.get("usd") or 0) * need
-        missing.append((need, name, p.get("eur"), p.get("usd"), info))
+        totals["mp"] += (p.get("mp") or 0) * need
+        missing.append((need, name, p.get("eur"), p.get("usd"), p.get("mp"), info))
     missing.sort(key=lambda c: c[2] or 0, reverse=True)
     return {"missing": missing, "totals": totals,
             "owned_unique": owned_unique, "owned_copies": owned_copies,
@@ -176,6 +179,49 @@ def http(method: str, url: str, **kwargs) -> requests.Response:
             continue
         return r
     return r
+
+
+_mp_index: dict[str, float] | None = None
+
+
+def manapool_index() -> dict[str, float]:
+    """Card name -> cheapest non-foil ManaPool listing in USD, at the
+    condition set by MANAPOOL_CONDITION in .env (any | lp | nm; default lp).
+    ManaPool's full catalog (~50 MB) is cached next to the script and only
+    re-downloaded when the cache is older than 24 hours — repeat runs in the
+    same day read the local file. Prices are live lowest listings on a US
+    marketplace (shipping not included).
+    """
+    global _mp_index
+    if _mp_index is not None:
+        return _mp_index
+    cond = os.environ.get("MANAPOOL_CONDITION", "lp").lower()
+    field = {"any": "price_cents", "lp": "price_cents_lp_plus",
+             "nm": "price_cents_nm"}.get(cond, "price_cents_lp_plus")
+    try:
+        stale = (not MANAPOOL_CACHE.is_file()
+                 or time.time() - MANAPOOL_CACHE.stat().st_mtime > 86400)
+        if stale:
+            r = http("GET", MANAPOOL_PRICES)
+            r.raise_for_status()
+            MANAPOOL_CACHE.write_bytes(r.content)
+            print(f"ManaPool:  price catalog refreshed ({MANAPOOL_CACHE.name})")
+        data = json.loads(MANAPOOL_CACHE.read_text(encoding="utf-8"))["data"]
+    except Exception as exc:
+        print(f"ManaPool:  unavailable ({exc}) — MP prices skipped this run")
+        _mp_index = {}
+        return _mp_index
+    index: dict[str, float] = {}
+    for card in data:
+        cents = card.get(field)
+        if not cents:
+            continue
+        name = card["name"].lower()
+        usd = cents / 100
+        if name not in index or usd < index[name]:
+            index[name] = usd
+    _mp_index = index
+    return index
 
 
 def collection_path(out_dir: Path) -> Path:
@@ -373,6 +419,7 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
                 "eur": float(p["eur"]) if p.get("eur") else None,
                 "usd": float(p["usd"]) if p.get("usd") else None,
                 "tix": float(p["tix"]) if p.get("tix") else None,
+                "mp": manapool_index().get(card["name"].lower()),
             }
             prices[card["name"].lower()] = entry
             # Let a front-face name find its double-faced card
@@ -390,6 +437,7 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
         cheap = cheapest_paper_printing(name)
         if cheap:
             cheap["tix"] = entry["tix"] if entry else None
+            cheap["mp"] = manapool_index().get(name.lower())
             prices[name.lower()] = cheap
         time.sleep(0.1)
     return prices
@@ -424,8 +472,8 @@ def fx_rates() -> dict | None:
 
 
 def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> dict:
-    totals = {"eur": 0.0, "usd": 0.0, "tix": 0.0}
-    coverage = {"eur": 0, "usd": 0, "tix": 0}
+    totals = {"eur": 0.0, "usd": 0.0, "tix": 0.0, "mp": 0.0}
+    coverage = {"eur": 0, "usd": 0, "tix": 0, "mp": 0}
     unpriced = []
     priced_cards = []
     all_cards = []
@@ -433,14 +481,14 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
         p = prices.get(name.lower())
         if not p or (p["eur"] is None and p["usd"] is None):
             unpriced.append(name)
-            all_cards.append((qty, name, None, None))
+            all_cards.append((qty, name, None, None, None))
             continue
         for src in totals:
             if p.get(src) is not None:
                 totals[src] += p[src] * qty
                 coverage[src] += 1
-        priced_cards.append((name, p["eur"], p["usd"]))
-        all_cards.append((qty, name, p["eur"], p["usd"]))
+        priced_cards.append((name, p["eur"], p["usd"], p.get("mp")))
+        all_cards.append((qty, name, p["eur"], p["usd"], p.get("mp")))
     top = sorted(priced_cards, key=lambda c: c[1] or 0, reverse=True)[:10]
     all_cards.sort(key=lambda c: c[2] or 0, reverse=True)
     return {"totals": totals, "coverage": coverage, "unique": len(decklist),
@@ -462,6 +510,10 @@ def _gbp_cell(amount):
     return f"£{amount:,.2f}" if amount is not None else "—"
 
 
+def _usd_cell(amount):
+    return f"${amount:,.2f}" if amount is not None else "—"
+
+
 def _card_gbp(eur, usd, rates):
     # Prefer the Cardmarket EUR price; fall back to USD if only that exists
     if not rates:
@@ -475,7 +527,8 @@ def _card_gbp(eur, usd, rates):
 
 def buy_frontmatter(buy: dict, rates: dict | None) -> str:
     lines = [f"owned: {buy['owned_unique']}/{buy['unique']}",
-             f"buy-eur: {buy['totals']['eur']:.2f}"]
+             f"buy-eur: {buy['totals']['eur']:.2f}",
+             f"buy-mp: {buy['totals']['mp']:.2f}"]
     if rates:
         lines.append(f"buy-gbp: {buy['totals']['eur'] * rates['eur_gbp']:.2f}")
     return "\n".join(lines)
@@ -494,15 +547,15 @@ def render_buy_section(buy: dict, collection_name: str, rates: dict | None) -> s
 """
     buy_gbp = _gbp_cell(buy["totals"]["eur"] * rates["eur_gbp"] if rates else None)
     buy_rows = "\n".join(
-        f"| {name} | {need} | {_money(eur, usd)[0]} | {_money(eur, usd)[1]} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
-        for need, name, eur, usd, _ in buy["missing"]
+        f"| {name} | {need} | {_money(eur, usd)[0]} | {_money(eur, usd)[1]} | {_usd_cell(mp)} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
+        for need, name, eur, usd, mp, _ in buy["missing"]
     )
 
     # Same card, cheaper printing (incl. plain-MTG versions of
     # Universes Beyond skins) — worth a table when it saves anything
     cheaper = []
     best_total_eur = 0.0
-    for need, name, eur, usd, info in buy["missing"]:
+    for need, name, eur, usd, _mp, info in buy["missing"]:
         ch = (info or {}).get("cheapest")
         effective = eur
         if ch and ch["eur"] is not None and (eur is None or ch["eur"] < eur - 0.005):
@@ -534,10 +587,10 @@ Buying the cheapest printings instead ≈ **€{best_total_eur:,.2f} · {best_gb
     return f"""## 🛒 Cards to Buy
 
 {summary}
-Completing the deck ≈ **€{buy["totals"]["eur"]:,.2f} · ${buy["totals"]["usd"]:,.2f} · {buy_gbp}** (prices per copy below).
+Completing the deck ≈ **€{buy["totals"]["eur"]:,.2f} · ${buy["totals"]["usd"]:,.2f} · MP ${buy["totals"]["mp"]:,.2f} · {buy_gbp}** (prices per copy below).
 
-| Card | Need | EUR | USD | ≈ GBP |
-|------|-----:|----:|----:|------:|
+| Card | Need | EUR | USD | MP $ | ≈ GBP |
+|------|-----:|----:|----:|-----:|------:|
 {buy_rows}
 
 {cheaper_section}"""
@@ -613,6 +666,8 @@ def render_value_block(report: dict, today: str) -> str:
          totals["eur"] * rates["eur_gbp"] if rates else None, coverage["eur"]),
         ("🇺🇸 TCGPlayer", f"${totals['usd']:,.2f}",
          totals["usd"] * rates["usd_gbp"] if rates else None, coverage["usd"]),
+        ("🛍️ ManaPool", f"${totals['mp']:,.2f}",
+         totals["mp"] * rates["usd_gbp"] if rates else None, coverage["mp"]),
         ("🖥️ Cardhoarder (MTGO)", f"{totals['tix']:,.2f} tix",
          totals["tix"] * rates["usd_gbp"] if rates else None, coverage["tix"]),
     ]
@@ -624,18 +679,18 @@ def render_value_block(report: dict, today: str) -> str:
 |--------|------:|------:|-------------:|
 {value_rows}
 
-*💰 Standard (non-foil) cards, Scryfall daily snapshot ({today}). ≈ GBP is rough — ECB reference rates via frankfurter.dev; 1 tix ≈ $1.*"""
+*💰 Standard (non-foil) cards. Cardmarket/TCGPlayer/tix: Scryfall daily snapshot ({today}); ManaPool: cheapest live listings (LP+ by default), US marketplace, shipping excluded. ≈ GBP is rough — ECB reference rates via frankfurter.dev; 1 tix ≈ $1.*"""
 
 
 def render_card_tables(report: dict) -> str:
     rates = report["rates"]
     top_rows = "\n".join(
-        f"| {name} | {_money(eur, usd)[0]} | {_money(eur, usd)[1]} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
-        for name, eur, usd in report["top"]
+        f"| {name} | {_money(eur, usd)[0]} | {_money(eur, usd)[1]} | {_usd_cell(mp)} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
+        for name, eur, usd, mp in report["top"]
     )
     all_rows = "\n".join(
-        f"| {name}{f' ×{qty}' if qty > 1 else ''} | {_money(eur, usd)[0]} | {_money(eur, usd)[1]} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
-        for qty, name, eur, usd in report["all"]
+        f"| {name}{f' ×{qty}' if qty > 1 else ''} | {_money(eur, usd)[0]} | {_money(eur, usd)[1]} | {_usd_cell(mp)} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
+        for qty, name, eur, usd, mp in report["all"]
     )
     unpriced_note = (
         f"\n> ⚠️ No price found for {len(report['unpriced'])} card(s): "
@@ -643,16 +698,16 @@ def render_card_tables(report: dict) -> str:
     )
     return f"""## 🏆 Priciest Cards
 
-| Card | EUR | USD | ≈ GBP |
-|------|----:|----:|------:|
+| Card | EUR | USD | MP $ | ≈ GBP |
+|------|----:|----:|-----:|------:|
 {top_rows}
 
 ### 💵 All Card Prices
 
 Per-card prices (×N marks multiples — basics etc.; the price shown is per copy).
 
-| Card | EUR | USD | ≈ GBP |
-|------|----:|----:|------:|
+| Card | EUR | USD | MP $ | ≈ GBP |
+|------|----:|----:|-----:|------:|
 {all_rows}
 {unpriced_note}
 """
@@ -664,6 +719,7 @@ def price_frontmatter_str(report: dict) -> str:
     if rates:
         fm_prices["gbp"] = totals["eur"] * rates["eur_gbp"]
     fm_prices["usd"] = totals["usd"]
+    fm_prices["mp"] = totals["mp"]
     fm_prices["tix"] = totals["tix"]
     return "\n".join(f"price-{k}: {v:.2f}" for k, v in fm_prices.items())
 
@@ -716,7 +772,7 @@ def recheck_all(out_dir: Path) -> None:
             text = text.replace("## 🏆 Priciest Cards",
                                 buy_sec + "## 🏆 Priciest Cards", 1)
         # Frontmatter: rebuild all price/owned/buy fields, stamp price-date
-        text = re.sub(r"^(price-(eur|gbp|usd|tix)|owned|buy-eur|buy-gbp): .*\n",
+        text = re.sub(r"^(price-(eur|gbp|usd|tix|mp)|owned|buy-eur|buy-gbp|buy-mp): .*\n",
                       "", text, flags=re.M)
         fm = price_frontmatter_str(report) + "\n" + buy_frontmatter(buy, rates)
         text = text.replace("\nprice-date:", f"\n{fm}\nprice-date:", 1)

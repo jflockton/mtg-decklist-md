@@ -129,9 +129,19 @@ totalled into four estimates shown right under the note's Source line:
 
 | Source | Currency | Market |
 |--------|----------|--------|
-| 🇪🇺 [Cardmarket](https://www.cardmarket.com/en/Magic) | EUR | European paper singles |
-| 🇺🇸 [TCGPlayer](https://www.tcgplayer.com) | USD | US paper singles |
+| 🇪🇺 [Cardmarket](https://www.cardmarket.com/en/Magic) | EUR | European paper singles (market average) |
+| 🇺🇸 [TCGPlayer](https://www.tcgplayer.com) | USD | US paper singles (market average) |
+| 🛍️ [ManaPool](https://manapool.com) | USD | US marketplace — **live cheapest listings** via their [open API](https://manapool.com/api/docs/v1) |
 | 🖥️ [Cardhoarder](https://www.cardhoarder.com) | tix | Magic Online (1 tix ≈ $1) |
+
+ManaPool differs from the others: it's what you could *actually buy each card
+for right now* (cheapest listing across printings at your minimum condition —
+`MANAPOOL_CONDITION` in `.env`: `any`/`lp` (default)/`nm`), comparable to
+their cart optimizer's lowest-price subtotal. Shipping/packages aren't
+included, and it's a US marketplace. Their full price catalog (~50 MB) is
+downloaded once and cached next to the script; runs re-use the local file and
+only re-download when it's over 24 hours old. Every price table gets an
+`MP $` column and the Deck Value table a ManaPool row.
 
 Every row — and every card in the Priciest Cards / All Card Prices tables —
 also gets a **≈ GBP column**: EUR/USD converted at the ECB reference rates

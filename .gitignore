@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 .env
 imports/
+manapool_prices.json
