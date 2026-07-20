@@ -99,6 +99,7 @@ def load_collection(out_dir: Path) -> tuple[str, dict[str, int]] | None:
 _card_info_cache: dict[str, dict] = {}
 _prints_cache_loaded = False
 _prints_cache_dirty = False
+_prints_fetched = 0
 PRINTS_CACHE = SCRIPT_DIR / ".cache" / "scryfall_prints.json"
 PRINTS_TTL = 72 * 3600  # prices drift slowly; 3 days is fine for budget hints
 
@@ -147,8 +148,13 @@ def card_prints_info(name: str) -> dict:
     key = name.lower()
     if key in _card_info_cache:
         return _card_info_cache[key]
-    global _prints_cache_dirty
+    global _prints_cache_dirty, _prints_fetched
     _prints_cache_dirty = True
+    _prints_fetched += 1
+    if _prints_fetched == 1:
+        print("Scryfall:  looking up printings (~0.5s per new card, cached 3 days)...")
+    elif _prints_fetched % 10 == 0:
+        print(f"Scryfall:  ...{_prints_fetched} cards looked up")
     info = {"aliases": {key}, "canonical": name, "cheapest": None,
             "ts": time.time()}
     r = http("GET", SCRYFALL_NAMED, params={"exact": name})
@@ -219,7 +225,9 @@ def http(method: str, url: str, **kwargs) -> requests.Response:
     for attempt in range(5):
         r = requests.request(method, url, headers=HTTP_HEADERS, timeout=30, **kwargs)
         if r.status_code == 429 or r.status_code >= 500:
-            time.sleep(float(r.headers.get("Retry-After", 2)) + attempt)
+            wait = float(r.headers.get("Retry-After", 2)) + attempt
+            print(f"Throttled: server asked us to slow down — waiting {wait:.0f}s")
+            time.sleep(wait)
             continue
         return r
     return r
