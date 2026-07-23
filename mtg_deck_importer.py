@@ -31,6 +31,7 @@ Output note:  YYYY-MM-DD_MTG_<Commander Name>.md
 Output image: Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg
 """
 
+import argparse
 import atexit
 import json
 import os
@@ -38,6 +39,7 @@ import re
 import sys
 import time
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 
 import requests
@@ -47,6 +49,11 @@ SCRIPT_DIR = Path(__file__).parent
 
 USER_AGENT = "mtg-decklist-md/1.0 (personal Obsidian tool)"
 HTTP_HEADERS = {"User-Agent": USER_AGENT, "Accept": "*/*"}
+
+# One Session for the whole run so the hundreds of sequential API calls reuse
+# a single keep-alive connection instead of a fresh TLS handshake each time.
+SESSION = requests.Session()
+SESSION.headers.update(HTTP_HEADERS)
 
 SCRYFALL_NAMED = "https://api.scryfall.com/cards/named"
 SCRYFALL_COLLECTION = "https://api.scryfall.com/cards/collection"
@@ -109,8 +116,8 @@ def _load_prints_cache() -> None:
     _prints_cache_loaded = True
     try:
         raw = json.loads(PRINTS_CACHE.read_text(encoding="utf-8"))
-    except Exception:
-        return
+    except (OSError, ValueError):
+        return  # missing or corrupt cache — just start empty
     now = time.time()
     for key, val in raw.items():
         if now - val.get("ts", 0) < PRINTS_TTL:
@@ -129,11 +136,23 @@ def _save_prints_cache() -> None:
                    "cheapest": v["cheapest"], "ts": v.get("ts", time.time())}
                for k, v in _card_info_cache.items()}
         PRINTS_CACHE.write_text(json.dumps(out), encoding="utf-8")
-    except Exception:
+    except OSError:
         pass
 
 
 atexit.register(_save_prints_cache)
+
+
+def scryfall_card_image(card: dict, size: str = "small") -> str | None:
+    """Image URL for a Scryfall card object, handling double-faced cards
+    (image lives per face). 'small' is 146px wide — the right size for a
+    gallery grid and light to load remotely.
+    """
+    uris = card.get("image_uris")
+    if not uris:
+        faces = card.get("card_faces") or []
+        uris = faces[0].get("image_uris") if faces else None
+    return uris.get(size) if uris else None
 
 
 def card_prints_info(name: str) -> dict:
@@ -158,14 +177,12 @@ def card_prints_info(name: str) -> dict:
     info = {"aliases": {key}, "canonical": name, "cheapest": None,
             "ts": time.time()}
     r = http("GET", SCRYFALL_NAMED, params={"exact": name})
-    time.sleep(0.1)
     if r.status_code == 200:
         info["canonical"] = r.json()["name"]
         info["aliases"].add(info["canonical"].lower())
         s = http("GET", SCRYFALL_SEARCH,
                  params={"q": f'!"{info["canonical"]}" game:paper',
                          "unique": "prints"})
-        time.sleep(0.1)
         if s.status_code == 200:
             best = None
             for c in s.json().get("data", []):
@@ -175,11 +192,14 @@ def card_prints_info(name: str) -> dict:
                 usd = float(c["prices"]["usd"]) if c["prices"].get("usd") else None
                 if eur is None and usd is None:
                     continue
+                # EUR-first ranking: we buy on Cardmarket, so prefer a printing
+                # that HAS a EUR price even if a USD-only one is nominally lower
                 rank = (eur if eur is not None else float("inf"),
                         usd if usd is not None else float("inf"))
                 if best is None or rank < best[0]:
                     best = (rank, {"eur": eur, "usd": usd, "set": c["set_name"],
-                                   "printed_as": c.get("flavor_name") or c["name"]})
+                                   "printed_as": c.get("flavor_name") or c["name"],
+                                   "img": scryfall_card_image(c)})
             if best:
                 info["cheapest"] = best[1]
     _card_info_cache[key] = info
@@ -219,11 +239,25 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
             "unique": len(decklist), "total_copies": total_copies}
 
 
+_last_scryfall_call = 0.0
+SCRYFALL_MIN_INTERVAL = 0.1  # Scryfall asks for no more than ~10 requests/sec
+
+
 def http(method: str, url: str, **kwargs) -> requests.Response:
-    """Request with polite backoff on 429/5xx — Scryfall rate-limits bursts."""
+    """Request with polite backoff on 429/5xx and automatic pacing of Scryfall
+    calls — one place enforces the ~10 req/s limit so no call site can forget.
+    """
+    global _last_scryfall_call
+    throttle = "api.scryfall.com" in url
     r = None
     for attempt in range(5):
-        r = requests.request(method, url, headers=HTTP_HEADERS, timeout=30, **kwargs)
+        if throttle:
+            gap = time.time() - _last_scryfall_call
+            if gap < SCRYFALL_MIN_INTERVAL:
+                time.sleep(SCRYFALL_MIN_INTERVAL - gap)
+        r = SESSION.request(method, url, timeout=30, **kwargs)
+        if throttle:
+            _last_scryfall_call = time.time()
         if r.status_code == 429 or r.status_code >= 500:
             wait = float(r.headers.get("Retry-After", 2)) + attempt
             print(f"Throttled: server asked us to slow down — waiting {wait:.0f}s")
@@ -233,20 +267,15 @@ def http(method: str, url: str, **kwargs) -> requests.Response:
     return r
 
 
-_mp_index: dict[str, float] | None = None
-
-
+@lru_cache(maxsize=1)
 def manapool_index() -> dict[str, float]:
     """Card name -> cheapest non-foil ManaPool listing in USD, at the
     condition set by MANAPOOL_CONDITION in .env (any | lp | nm; default lp).
     ManaPool's full catalog (~50 MB) is cached next to the script and only
     re-downloaded when the cache is older than 24 hours — repeat runs in the
     same day read the local file. Prices are live lowest listings on a US
-    marketplace (shipping not included).
+    marketplace (shipping not included). Result is memoised for the run.
     """
-    global _mp_index
-    if _mp_index is not None:
-        return _mp_index
     cond = os.environ.get("MANAPOOL_CONDITION", "lp").lower()
     field = {"any": "price_cents", "lp": "price_cents_lp_plus",
              "nm": "price_cents_nm"}.get(cond, "price_cents_lp_plus")
@@ -262,11 +291,12 @@ def manapool_index() -> dict[str, float]:
             r.raise_for_status()
             MANAPOOL_CACHE.write_bytes(r.content)
             print(f"ManaPool:  price catalog refreshed ({MANAPOOL_CACHE.name})")
-        data = json.loads(MANAPOOL_CACHE.read_text(encoding="utf-8"))["data"]
-    except Exception as exc:
+            data = json.loads(r.content)["data"]  # already in memory — no re-read
+        else:
+            data = json.loads(MANAPOOL_CACHE.read_text(encoding="utf-8"))["data"]
+    except (OSError, ValueError, KeyError, requests.RequestException) as exc:
         print(f"ManaPool:  unavailable ({exc}) — MP prices skipped this run")
-        _mp_index = {}
-        return _mp_index
+        return {}
     index: dict[str, float] = {}
     for card in data:
         cents = card.get(field)
@@ -276,7 +306,6 @@ def manapool_index() -> dict[str, float]:
         usd = cents / 100
         if name not in index or usd < index[name]:
             index[name] = usd
-    _mp_index = index
     return index
 
 
@@ -362,7 +391,7 @@ def fetch_edhrec(url: str) -> dict:
     """EDHREC deck previews are plain server-rendered Next.js pages — the deck
     ships inside the __NEXT_DATA__ JSON blob, no browser needed.
     """
-    r = requests.get(url, headers=HTTP_HEADERS, timeout=30)
+    r = http("GET", url)
     r.raise_for_status()
     m = re.search(
         r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
@@ -451,7 +480,6 @@ def fetch_commander_art(commander: str, dest: Path) -> str:
     card = r.json()
     # Double-faced cards keep image_uris per face
     image_uris = card.get("image_uris") or card["card_faces"][0]["image_uris"]
-    time.sleep(0.1)  # Scryfall asks for ~10 requests/sec max
     img = http("GET", image_uris["normal"])
     img.raise_for_status()
     dest.write_bytes(img.content)
@@ -476,54 +504,47 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
                 "usd": float(p["usd"]) if p.get("usd") else None,
                 "tix": float(p["tix"]) if p.get("tix") else None,
                 "mp": manapool_index().get(card["name"].lower()),
+                "img": scryfall_card_image(card),
             }
             prices[card["name"].lower()] = entry
             # Let a front-face name find its double-faced card
             if "//" in card["name"]:
                 prices.setdefault(card["name"].split("//")[0].strip().lower(), entry)
-        time.sleep(0.1)  # Scryfall asks for ~10 requests/sec max
 
     # The collection endpoint returns one arbitrary printing per card, which
     # can be an online-only set with no paper prices (e.g. Tempest Remastered
-    # Mox Diamond). For those, fall back to the cheapest paper printing.
+    # Mox Diamond). For those, fall back to the cheapest paper printing — reuse
+    # the disk-cached prints lookup so we never fetch the same search twice.
     for name in names:
         entry = prices.get(name.lower())
         if entry and (entry["eur"] is not None or entry["usd"] is not None):
             continue
-        cheap = cheapest_paper_printing(name)
+        cheap = card_prints_info(name).get("cheapest")
         if cheap:
-            cheap["tix"] = entry["tix"] if entry else None
-            cheap["mp"] = manapool_index().get(name.lower())
-            prices[name.lower()] = cheap
-        time.sleep(0.1)
+            prices[name.lower()] = {
+                "eur": cheap.get("eur"),
+                "usd": cheap.get("usd"),
+                "tix": entry["tix"] if entry else None,
+                "mp": manapool_index().get(name.lower()),
+                "img": cheap.get("img") or (entry or {}).get("img"),
+            }
     return prices
 
 
-def cheapest_paper_printing(name: str) -> dict | None:
-    r = http("GET", SCRYFALL_SEARCH,
-             params={"q": f'!"{name}" game:paper', "unique": "prints"})
-    if r.status_code != 200:
-        return None
-    printings = r.json().get("data", [])
-    eurs = [float(c["prices"]["eur"]) for c in printings if c["prices"].get("eur")]
-    usds = [float(c["prices"]["usd"]) for c in printings if c["prices"].get("usd")]
-    if not eurs and not usds:
-        return None
-    return {"eur": min(eurs) if eurs else None, "usd": min(usds) if usds else None}
-
-
+@lru_cache(maxsize=1)
 def fx_rates() -> dict | None:
     """Current ECB reference rates via frankfurter.dev: EUR→GBP and USD→GBP
-    (derived through EUR). None if the rate API is unreachable.
+    (derived through EUR). None if the rate API is unreachable. Memoised so a
+    --recheck over many notes fetches the rate once.
     """
     try:
-        r = requests.get(ECB_RATES, params={"base": "EUR", "symbols": "GBP,USD"},
-                         headers=HTTP_HEADERS, timeout=15)
+        r = SESSION.get(ECB_RATES, params={"base": "EUR", "symbols": "GBP,USD"},
+                        timeout=15)
         r.raise_for_status()
         rates = r.json()["rates"]
         return {"eur_gbp": float(rates["GBP"]),
                 "usd_gbp": float(rates["GBP"]) / float(rates["USD"])}
-    except Exception:
+    except (requests.RequestException, ValueError, KeyError, ZeroDivisionError):
         return None
 
 
@@ -535,16 +556,17 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
     all_cards = []
     for qty, name in decklist:
         p = prices.get(name.lower())
+        img = (p or {}).get("img")
         if not p or (p["eur"] is None and p["usd"] is None):
             unpriced.append(name)
-            all_cards.append((qty, name, None, None, None))
+            all_cards.append((qty, name, None, None, None, img))
             continue
-        for src in totals:
+        for src in ("eur", "usd", "tix", "mp"):
             if p.get(src) is not None:
                 totals[src] += p[src] * qty
                 coverage[src] += 1
         priced_cards.append((name, p["eur"], p["usd"], p.get("mp")))
-        all_cards.append((qty, name, p["eur"], p["usd"], p.get("mp")))
+        all_cards.append((qty, name, p["eur"], p["usd"], p.get("mp"), img))
     top = sorted(priced_cards, key=lambda c: c[1] or 0, reverse=True)[:10]
     all_cards.sort(key=lambda c: c[2] or 0, reverse=True)
     return {"totals": totals, "coverage": coverage, "unique": len(decklist),
@@ -556,10 +578,8 @@ REVIEW_SECTIONS = ["🧠 First Impressions", "💪 Strengths", "⚠️ Weaknesse
                    "🔄 Cards to Consider Swapping", "📝 Play Notes"]
 
 
-def _money(eur, usd):
-    e = f"€{eur:,.2f}" if eur is not None else "—"
-    u = f"${usd:,.2f}" if usd is not None else "—"
-    return e, u
+def _eur_cell(amount):
+    return f"€{amount:,.2f}" if amount is not None else "—"
 
 
 def _gbp_cell(amount):
@@ -615,7 +635,7 @@ def render_buy_section(buy: dict, collection_name: str, rates: dict | None) -> s
 """
     buy_gbp = _gbp_cell(buy["totals"]["eur"] * rates["eur_gbp"] if rates else None)
     buy_rows = "\n".join(
-        f"| {name} | {need} | {_money(eur, usd)[0]} | {_money(eur, usd)[1]} | {_usd_cell(mp)} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
+        f"| {name} | {need} | {_eur_cell(eur)} | {_usd_cell(usd)} | {_usd_cell(mp)} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
         for need, name, eur, usd, mp, _ in buy["missing"]
     )
 
@@ -636,7 +656,7 @@ def render_buy_section(buy: dict, collection_name: str, rates: dict | None) -> s
     if cheaper:
         saved = buy["totals"]["eur"] - best_total_eur
         cheaper_rows = "\n".join(
-            f"| {name} | {label} ({set_name}) | €{cheap:,.2f} | {_money(deck_eur, None)[0]} | €{(deck_eur or 0) - cheap:,.2f} |"
+            f"| {name} | {label} ({set_name}) | €{cheap:,.2f} | {_eur_cell(deck_eur)} | €{(deck_eur or 0) - cheap:,.2f} |"
             for name, label, set_name, cheap, deck_eur, _ in cheaper
         )
         best_gbp = _gbp_cell(best_total_eur * rates["eur_gbp"] if rates else None)
@@ -751,20 +771,54 @@ def render_value_block(report: dict, today: str) -> str:
 *💰 Standard (non-foil) cards. Cardmarket/TCGPlayer/tix: Scryfall daily snapshot ({today}); ManaPool: cheapest live listings (LP+ by default), US marketplace, shipping excluded. ≈ GBP is rough — ECB reference rates via frankfurter.dev; 1 tix ≈ $1.*"""
 
 
+GALLERY_COLUMNS = 4
+GALLERY_IMG_WIDTH = 146  # matches Scryfall's "small" image so it renders crisp
+
+
+def render_gallery(cells: list[tuple[str | None, str]],
+                   columns: int = GALLERY_COLUMNS) -> str:
+    """A grid of card images as a markdown table so the whole deck is visible
+    at a glance. `cells` is (image_url, caption); a missing image shows just
+    the caption. HTML <img> tags render in Obsidian and any GFM viewer.
+    """
+    if not cells:
+        return "_No cards to show._"
+
+    def cell(img: str | None, caption: str) -> str:
+        caption = caption.replace("|", "\\|")
+        if img:
+            return (f'<img src="{img}" width="{GALLERY_IMG_WIDTH}" '
+                    f'alt="{caption}"><br>{caption}')
+        return caption
+
+    lines = ["| " + " | ".join([""] * columns) + " |",
+             "|" + "|".join([":--:"] * columns) + "|"]
+    for i in range(0, len(cells), columns):
+        row = list(cells[i:i + columns])
+        row += [(None, "")] * (columns - len(row))  # pad the last row
+        lines.append("| " + " | ".join(cell(img, cap) for img, cap in row) + " |")
+    return "\n".join(lines)
+
+
 def render_card_tables(report: dict) -> str:
     rates = report["rates"]
     top_rows = "\n".join(
-        f"| {name} | {_money(eur, usd)[0]} | {_money(eur, usd)[1]} | {_usd_cell(mp)} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
+        f"| {name} | {_eur_cell(eur)} | {_usd_cell(usd)} | {_usd_cell(mp)} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
         for name, eur, usd, mp in report["top"]
     )
     all_rows = "\n".join(
-        f"| {name}{f' ×{qty}' if qty > 1 else ''} | {_money(eur, usd)[0]} | {_money(eur, usd)[1]} | {_usd_cell(mp)} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
-        for qty, name, eur, usd, mp in report["all"]
+        f"| {name}{f' ×{qty}' if qty > 1 else ''} | {_eur_cell(eur)} | {_usd_cell(usd)} | {_usd_cell(mp)} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
+        for qty, name, eur, usd, mp, _img in report["all"]
     )
     unpriced_note = (
         f"\n> ⚠️ No price found for {len(report['unpriced'])} card(s): "
         + ", ".join(report["unpriced"]) if report["unpriced"] else ""
     )
+    gallery_cells = [
+        (img, f"{name}{f' ×{qty}' if qty > 1 else ''}")
+        for qty, name, _eur, _usd, _mp, img in report["all"]
+    ]
+    gallery = render_gallery(gallery_cells)
     return f"""## 🏆 Priciest Cards
 
 | Card | EUR | USD | MP $ | ≈ GBP |
@@ -779,18 +833,21 @@ Per-card prices (×N marks multiples — basics etc.; the price shown is per cop
 |------|----:|----:|-----:|------:|
 {all_rows}
 {unpriced_note}
+
+### 🖼️ Card Gallery
+
+Every card in the deck at its current printing, priciest first.
+
+{gallery}
 """
 
 
 SETS_CACHE = SCRIPT_DIR / ".cache" / "scryfall_sets.json"
-_sets_map: dict[str, str] | None = None
 
 
+@lru_cache(maxsize=1)
 def set_code_map() -> dict[str, str]:
     """Set name -> set code (e.g. 'Commander 2021' -> 'c21'), cached weekly."""
-    global _sets_map
-    if _sets_map is not None:
-        return _sets_map
     try:
         stale = (not SETS_CACHE.is_file()
                  or time.time() - SETS_CACHE.stat().st_mtime > 7 * 86400)
@@ -801,11 +858,10 @@ def set_code_map() -> dict[str, str]:
             SETS_CACHE.write_text(
                 json.dumps({s["name"]: s["code"] for s in r.json()["data"]}),
                 encoding="utf-8")
-        _sets_map = {k.lower(): v for k, v in
-                     json.loads(SETS_CACHE.read_text(encoding="utf-8")).items()}
-    except Exception:
-        _sets_map = {}
-    return _sets_map
+        return {k.lower(): v for k, v in
+                json.loads(SETS_CACHE.read_text(encoding="utf-8")).items()}
+    except (OSError, ValueError, KeyError, requests.RequestException):
+        return {}
 
 
 def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
@@ -818,11 +874,13 @@ def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
     rates = report["rates"]
     rows = []
     list_lines = []
+    gallery_cells = []
     totals = {"eur": 0.0, "mp": 0.0, "best_gbp": 0.0}
     for qty, name in decklist:
         p = prices.get(name.lower()) or {}
         deck_eur, mp = p.get("eur"), p.get("mp")
         label, eur = f"{name}", deck_eur
+        img = p.get("img")
         list_line = f"{qty} {name}"
         worth_checking = (deck_eur or p.get("usd") or 0) > 0.50
         if worth_checking:
@@ -830,6 +888,7 @@ def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
             ch = info.get("cheapest")
             if ch and _sane_cheaper(ch["eur"], deck_eur):
                 eur = ch["eur"]
+                img = ch.get("img") or img
                 printed = ch["printed_as"] if ch["printed_as"].lower() != name.lower() \
                     else name
                 label = f"{printed} ({ch['set']})"
@@ -848,11 +907,13 @@ def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
         totals["best_gbp"] += (best_gbp or 0) * qty
         rows.append(
             f"| {label}{f' ×{qty}' if qty > 1 else ''} | "
-            f"{_money(eur, None)[0]} | {_usd_cell(mp)} | {_gbp_cell(best_gbp)} |"
+            f"{_eur_cell(eur)} | {_usd_cell(mp)} | {_gbp_cell(best_gbp)} |"
         )
         list_lines.append(list_line)
+        gallery_cells.append((img, f"{label}{f' ×{qty}' if qty > 1 else ''}"))
     body = "\n".join(rows)
     listing = "\n".join(list_lines)
+    gallery = render_gallery(gallery_cells)
     return f"""## 💸 Cheapest Build
 
 The whole deck with every card at its cheapest functionally-identical version
@@ -874,6 +935,12 @@ Copy-paste list of the cheapest versions — `(SET)` pins the exact printing
 ```
 {listing}
 ```
+
+### 🖼️ Cheapest Version Gallery
+
+Each card at the cheapest version chosen above.
+
+{gallery}
 """
 
 
@@ -956,21 +1023,43 @@ def recheck_all(out_dir: Path) -> None:
               f" — to buy {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f})")
 
 
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="mtg_deck_importer.py",
+        description="Turn a Moxfield/EDHREC deck URL or a .txt decklist into an "
+                    "Obsidian deck note with prices, a buy list and card galleries.",
+        epilog=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "source", nargs="?",
+        help="Moxfield/EDHREC deck URL, or a path to a .txt decklist")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="regenerate an existing note (your review sections are kept)")
+    parser.add_argument(
+        "--own", action="store_true",
+        help="append the whole deck to _Collection.md as owned before comparing")
+    parser.add_argument(
+        "--recheck", action="store_true",
+        help="refresh every note's prices/buy list from the lists already in "
+             "the notes; takes no source and does no site fetching")
+    return parser
+
+
 def main() -> None:
-    argv = sys.argv[1:]
-    force = "--force" in argv
-    own = "--own" in argv
-    recheck = "--recheck" in argv
-    argv = [a for a in argv if a not in ("--force", "--own", "--recheck")]
+    parser = build_arg_parser()
+    args = parser.parse_args()
+    force, own, recheck = args.force, args.own, args.recheck
     if recheck:
-        if argv:
-            sys.exit("--recheck takes no URL/file — it refreshes every note's"
-                     " Cards to Buy from the deck lists already in the notes.")
+        if args.source:
+            parser.error("--recheck takes no URL/file — it refreshes every note's"
+                         " Cards to Buy from the deck lists already in the notes.")
         recheck_all(output_dir())
         return
-    if len(argv) != 1:
-        sys.exit(__doc__)
-    deck_url = argv[0]
+    if not args.source:
+        parser.error("a deck URL or .txt decklist path is required (or use --recheck)")
+    deck_url = args.source
     out_dir = output_dir()
     if not out_dir.is_dir():
         sys.exit(f"Vault output folder does not exist: {out_dir}")

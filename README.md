@@ -13,13 +13,13 @@ python mtg_deck_importer.py "path/to/My Deck Name.txt"
 ```
 
 Flags: `--force` regenerates an existing note; `--own` adds the whole deck
-to your collection (see below).
+to your collection (see below). Run `--help` for the full list.
 
 **Updated your collection (or just want fresh prices)?**
 `python mtg_deck_importer.py --recheck` (no URL) refreshes *every* deck note
-— deck value table, Priciest/All Card Prices, and the 🛒 Cards to Buy
-comparison against the current `_Collection.md` — using the deck list stored
-in each note. No site fetching, no browser windows; review sections and the
+— deck value table, Priciest/All Card Prices, both 🖼️ card galleries, the
+💸 Cheapest Build, and the 🛒 Cards to Buy comparison against the current
+`_Collection.md` — using the deck list stored in each note. No site fetching, no browser windows; review sections and the
 deck list itself are untouched. Works even for decks whose original source
 is gone. (Scryfall rate-limits heavy bursts; the app backs off and retries,
 so a big library can take a few minutes.)
@@ -104,15 +104,20 @@ Two files in your configured vault folder:
     column (also in the frontmatter for Dataview), a top-10 Priciest Cards
     table, and a full per-card price table sorted dearest-first — every
     price table shows native EUR / USD plus ≈ GBP
+  - 🖼️ **Card Gallery** — a 4-column grid of every card's image (Scryfall
+    "small" art) right under the price table, so you can eyeball the whole
+    deck at a glance instead of scrolling a wall of names. Images are hosted
+    links, so they render in any markdown viewer and cost nothing to store
   - 📜 **Deck List** — commander first, then mainboard alphabetically, one
     `1 Card Name` per line (pastes straight back into Moxfield / Arena)
   - 💸 **Cheapest Build** — the whole deck again with every card at its
     cheapest functionally-identical version (other printings, UB/plain-name
-    swaps, ManaPool's cheapest listing) with a best-mix total, plus a
+    swaps, ManaPool's cheapest listing) with a best-mix total, a
     **copy-paste deck list** of those cheapest versions with `(SET)` codes
-    pinning the exact printings (Moxfield's import format). Cards under
-    €0.50 keep the deck's own version. Printing lookups are cached for 3
-    days in `.cache/`, so only the first run after a quiet spell is slow.
+    pinning the exact printings (Moxfield's import format), and its own
+    🖼️ gallery showing each chosen cheapest version. Cards under €0.50 keep
+    the deck's own version. Printing lookups are cached for 3 days in
+    `.cache/`, so only the first run after a quiet spell is slow.
 - 🎨 `Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg` — the commander card
   from Scryfall (the `Attachments` subfolder is created if missing)
 
