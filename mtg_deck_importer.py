@@ -16,10 +16,23 @@ pass --force to regenerate it anyway.
 _Collection.md (under the deck's name) before the comparison runs — use it
 when you buy a precon you'd imported as a wishlist deck.
 
-`python mtg_deck_importer.py --recheck` (no URL) refreshes every note's
+Every note carries a stable deck-id (shown by `--list`) so a single deck can
+be targeted by number.
+
+`python mtg_deck_importer.py --recheck` (no ID) refreshes every note's
 Cards to Buy section against the current _Collection.md, using the deck
 list stored in each note — run it after updating your collection. No site
 fetching, no browser; review sections and everything else stay untouched.
+`--recheck <id>` instead fully re-imports that one deck (list + prices + art)
+from its source.
+
+`python mtg_deck_importer.py --reimport` refreshes deck lists and card art
+without fetching new prices — for every note, or one with `--reimport <id>`.
+It re-fetches each list from its source (URL or archived .txt), falling back
+to the list stored in the note, re-downloads the commander art, and rebuilds
+the card gallery. Price, buy and Cheapest Build sections are left untouched.
+
+`python mtg_deck_importer.py --list` prints every deck's id and name.
 
 Fetches the deck list (Moxfield via a headed browser because of Cloudflare;
 EDHREC via plain HTTP), downloads the commander's artwork from Scryfall, and
@@ -264,6 +277,7 @@ def http(method: str, url: str, **kwargs) -> requests.Response:
             time.sleep(wait)
             continue
         return r
+    assert r is not None  # range(5) always runs, so r was assigned at least once
     return r
 
 
@@ -355,7 +369,10 @@ def fetch_moxfield(url: str) -> dict:
     """
     from playwright.sync_api import sync_playwright
 
-    deck_id = re.search(r"moxfield\.com/decks/([A-Za-z0-9_-]+)", url).group(1)
+    m = re.search(r"moxfield\.com/decks/([A-Za-z0-9_-]+)", url)
+    if not m:
+        sys.exit(f"Could not read a Moxfield deck id from: {url}")
+    deck_id = m.group(1)
     api_url = MOXFIELD_API.format(deck_id=deck_id)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False, channel="chrome")
@@ -531,6 +548,25 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
     return prices
 
 
+def fetch_card_images(names: list[str]) -> dict[str, str | None]:
+    """Card image URLs only, via Scryfall's collection endpoint. Used by
+    --reimport to (re)build galleries without pulling fresh market prices —
+    the response carries prices too, but they are ignored here.
+    """
+    imgs: dict[str, str | None] = {}
+    for i in range(0, len(names), 75):  # collection endpoint caps at 75 cards
+        chunk = names[i:i + 75]
+        r = http("POST", SCRYFALL_COLLECTION,
+                 json={"identifiers": [{"name": n} for n in chunk]})
+        r.raise_for_status()
+        for card in r.json().get("data", []):
+            img = scryfall_card_image(card)
+            imgs[card["name"].lower()] = img
+            if "//" in card["name"]:
+                imgs.setdefault(card["name"].split("//")[0].strip().lower(), img)
+    return imgs
+
+
 @lru_cache(maxsize=1)
 def fx_rates() -> dict | None:
     """Current ECB reference rates via frankfurter.dev: EUR→GBP and USD→GBP
@@ -701,16 +737,19 @@ def extract_reviews(text: str) -> dict[str, str]:
 def build_note(deck: dict, decklist: list[tuple[int, str]],
                image_url: str, deck_url: str, report: dict,
                buy: dict | None, collection_name: str | None,
-               reviews: dict[str, str], budget_section: str) -> str:
+               reviews: dict[str, str], budget_section: str,
+               deck_id: int) -> str:
     today = date.today().isoformat()
     commander_line = ", ".join(deck["commanders"])
     listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
 
     price_frontmatter = price_frontmatter_str(report)
-    if buy is not None:
+    # buy and collection_name always arrive together (see import_deck)
+    if buy is not None and collection_name is not None:
         price_frontmatter += "\n" + buy_frontmatter(buy, report["rates"])
-    buy_section = render_buy_section(buy, collection_name, report["rates"]) \
-        if buy is not None else ""
+        buy_section = render_buy_section(buy, collection_name, report["rates"])
+    else:
+        buy_section = ""
     review_block = "\n\n".join(
         f"## {heading}\n\n{reviews.get(heading, '-')}" for heading in REVIEW_SECTIONS
     )
@@ -721,6 +760,7 @@ created: {today}
 commander: {commander_line}
 deck-name: {deck["name"]}
 deck-url: {deck_url}
+deck-id: {deck_id}
 {price_frontmatter}
 price-date: {today}
 ---
@@ -818,7 +858,6 @@ def render_card_tables(report: dict) -> str:
         (img, f"{name}{f' ×{qty}' if qty > 1 else ''}")
         for qty, name, _eur, _usd, _mp, img in report["all"]
     ]
-    gallery = render_gallery(gallery_cells)
     return f"""## 🏆 Priciest Cards
 
 | Card | EUR | USD | MP $ | ≈ GBP |
@@ -834,12 +873,20 @@ Per-card prices (×N marks multiples — basics etc.; the price shown is per cop
 {all_rows}
 {unpriced_note}
 
-### 🖼️ Card Gallery
-
-Every card in the deck at its current printing, priciest first.
-
-{gallery}
+{render_card_gallery(gallery_cells)}
 """
+
+
+def render_card_gallery(cells: list[tuple[str | None, str]]) -> str:
+    """The 'Card Gallery' subsection — a grid of every card at its current
+    printing. Shared by the full render and by --reimport, which rebuilds
+    just this block from fresh images without touching prices.
+    """
+    return f"""### 🖼️ Card Gallery
+
+Every card in the deck at its current printing.
+
+{render_gallery(cells)}"""
 
 
 SETS_CACHE = SCRIPT_DIR / ".cache" / "scryfall_sets.json"
@@ -955,6 +1002,75 @@ def price_frontmatter_str(report: dict) -> str:
     return "\n".join(f"price-{k}: {v:.2f}" for k, v in fm_prices.items())
 
 
+DECK_ID_RE = re.compile(r"^deck-id: (\d+)$", re.M)
+
+
+def read_deck_id(text: str) -> int | None:
+    m = DECK_ID_RE.search(text)
+    return int(m.group(1)) if m else None
+
+
+def _insert_deck_id(text: str, did: int) -> str:
+    """Add (or correct) the deck-id line in a note's frontmatter, right after
+    deck-url so it sits with the other identity fields.
+    """
+    if DECK_ID_RE.search(text):
+        return DECK_ID_RE.sub(f"deck-id: {did}", text, count=1)
+    return re.sub(r"^(deck-url: .*)$", lambda m: f"{m.group(1)}\ndeck-id: {did}",
+                  text, count=1, flags=re.M)
+
+
+def deck_id_map(out_dir: Path) -> dict[int, Path]:
+    """{deck-id: note path} for every deck note, assigning a fresh id to any
+    note that lacks one (written into its frontmatter). Ids are sequential and
+    start one past the highest already in use, so existing ids never shift.
+    """
+    notes = sorted(out_dir.glob("????-??-??_MTG_*.md"))
+    ids: dict[int, Path] = {}
+    missing: list[Path] = []
+    for note in notes:
+        did = read_deck_id(note.read_text(encoding="utf-8"))
+        if did is None:
+            missing.append(note)
+        else:
+            ids[did] = note
+    nxt = (max(ids) + 1) if ids else 1
+    for note in missing:
+        text = _insert_deck_id(note.read_text(encoding="utf-8"), nxt)
+        note.write_text(text, encoding="utf-8")
+        ids[nxt] = note
+        nxt += 1
+    return ids
+
+
+def next_deck_id(out_dir: Path) -> int:
+    """The id to give a brand-new note: one past the highest already assigned.
+    Does not touch existing notes (that is deck_id_map's job).
+    """
+    highest = 0
+    for note in out_dir.glob("????-??-??_MTG_*.md"):
+        did = read_deck_id(note.read_text(encoding="utf-8"))
+        if did and did > highest:
+            highest = did
+    return highest + 1
+
+
+def list_decks(out_dir: Path) -> None:
+    """Print every deck's id and name so a number is on hand for --recheck /
+    --reimport. Backfills ids into any note still missing one.
+    """
+    ids = deck_id_map(out_dir)
+    if not ids:
+        print(f"No deck notes found in {out_dir}")
+        return
+    for did in sorted(ids):
+        text = ids[did].read_text(encoding="utf-8")
+        name_m = (re.search(r"^deck-name: (.+)$", text, re.M)
+                  or re.search(r"^# 🃏 (.+)$", text, re.M))
+        name = name_m.group(1).strip() if name_m else ids[did].stem
+        print(f"[{did:>3}] {name}  —  {ids[did].name}")
+
+
 def recheck_all(out_dir: Path) -> None:
     """Refresh every deck note's price data and collection comparison using
     the deck list stored in the note itself — no site fetching, no browser.
@@ -966,11 +1082,11 @@ def recheck_all(out_dir: Path) -> None:
         sys.exit(f"No collection file found at {collection_path(out_dir)}")
     collection_name, owned = collection
     today = date.today().isoformat()
-    notes = sorted(out_dir.glob("????-??-??_MTG_*.md"))
-    if not notes:
+    ids = deck_id_map(out_dir)  # backfill ids so every note is addressable
+    if not ids:
         sys.exit(f"No deck notes found in {out_dir}")
 
-    for note in notes:
+    for did, note in sorted(ids.items()):
         text = note.read_text(encoding="utf-8")
         block = re.search(r"## 📜 Deck List\s*```\n(.*?)```", text, re.S)
         if not block:
@@ -1018,53 +1134,38 @@ def recheck_all(out_dir: Path) -> None:
             text = text.rstrip("\n") + "\n\n" + budget_section
 
         note.write_text(text, encoding="utf-8")
-        print(f"{note.name}: value ~EUR {report['totals']['eur']:,.2f}"
+        print(f"[{did}] {note.name}: value ~EUR {report['totals']['eur']:,.2f}"
               f" — own {buy['owned_unique']}/{buy['unique']}"
               f" — to buy {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f})")
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="mtg_deck_importer.py",
-        description="Turn a Moxfield/EDHREC deck URL or a .txt decklist into an "
-                    "Obsidian deck note with prices, a buy list and card galleries.",
-        epilog=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "source", nargs="?",
-        help="Moxfield/EDHREC deck URL, or a path to a .txt decklist")
-    parser.add_argument(
-        "--force", action="store_true",
-        help="regenerate an existing note (your review sections are kept)")
-    parser.add_argument(
-        "--own", action="store_true",
-        help="append the whole deck to _Collection.md as owned before comparing")
-    parser.add_argument(
-        "--recheck", action="store_true",
-        help="refresh every note's prices/buy list from the lists already in "
-             "the notes; takes no source and does no site fetching")
-    return parser
+def resolve_out_dir() -> Path:
+    out = output_dir()
+    if not out.is_dir():
+        sys.exit(f"Vault output folder does not exist: {out}")
+    return out
 
 
-def main() -> None:
-    parser = build_arg_parser()
-    args = parser.parse_args()
-    force, own, recheck = args.force, args.own, args.recheck
-    if recheck:
-        if args.source:
-            parser.error("--recheck takes no URL/file — it refreshes every note's"
-                         " Cards to Buy from the deck lists already in the notes.")
-        recheck_all(output_dir())
-        return
-    if not args.source:
-        parser.error("a deck URL or .txt decklist path is required (or use --recheck)")
-    deck_url = args.source
-    out_dir = output_dir()
-    if not out_dir.is_dir():
-        sys.exit(f"Vault output folder does not exist: {out_dir}")
+def resolve_source(source: str) -> str:
+    """A note's deck-url for a .txt import is stored relative to the script
+    (e.g. 'imports/My Deck.txt'). Point that at the archived file so the deck
+    can be re-imported from it.
+    """
+    if source.lower().endswith(".txt") and not Path(source).is_file():
+        candidate = SCRIPT_DIR / source
+        if candidate.is_file():
+            return str(candidate)
+    return source
 
-    deck = fetch_deck(deck_url)
+
+def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
+                deck_id: int | None = None) -> None:
+    """Fetch a deck (URL or .txt), price it, download art, and write/refresh
+    its note. deck_id pins the note's id when re-importing a known deck; for a
+    new deck it is inherited from a matched note or freshly assigned.
+    """
+    deck_url = source
+    deck = fetch_deck(resolve_source(source))
     if not deck["commanders"]:
         sys.exit("No commander found on this deck — is it a Commander deck?")
 
@@ -1103,6 +1204,12 @@ def main() -> None:
         note_path = out_dir / f"{date.today().isoformat()}_MTG_{base}.md"
     stem = note_path.stem
 
+    # Keep the note's id: use the passed id, else the matched note's own, else
+    # the next free one — so a re-import never renumbers an existing deck.
+    if deck_id is None:
+        deck_id = (read_deck_id(match.read_text(encoding="utf-8")) if match
+                   else None) or next_deck_id(out_dir)
+
     attachments_dir = out_dir / "Attachments"
     attachments_dir.mkdir(exist_ok=True)
     image_path = attachments_dir / f"{stem}.jpg"
@@ -1131,7 +1238,7 @@ def main() -> None:
     budget_section = render_budget_list(decklist, prices, report)
     note_path.write_text(
         build_note(deck, decklist, image_url, deck_url, report, buy,
-                   collection_name, reviews, budget_section),
+                   collection_name, reviews, budget_section, deck_id),
         encoding="utf-8",
     )
 
@@ -1145,7 +1252,7 @@ def main() -> None:
 
     total = sum(qty for qty, _ in decklist)
     totals = report["totals"]
-    print(f"Deck:      {deck['name']}")
+    print(f"Deck:      {deck['name']} (id {deck_id})")
     print(f"Commander: {', '.join(deck['commanders'])}")
     print(f"Cards:     {total} ({len(decklist)} unique)")
     rates = report["rates"]
@@ -1160,6 +1267,182 @@ def main() -> None:
         print("Owned:     no _Collection.md found — skipped the Cards to Buy section")
     print(f"Note:      {note_path}")
     print(f"Artwork:   {image_path}")
+
+
+def recheck_one(out_dir: Path, deck_id: int) -> None:
+    """Full re-import of a single deck by id: re-fetch its list from source,
+    fresh prices, fresh art — the whole pipeline, scoped to one note.
+    """
+    ids = deck_id_map(out_dir)
+    note = ids.get(deck_id)
+    if not note:
+        sys.exit(f"No deck with id {deck_id}. Run --list to see the ids "
+                 f"(known: {', '.join(map(str, sorted(ids))) or 'none'}).")
+    m = re.search(r"^deck-url: (.+)$", note.read_text(encoding="utf-8"), re.M)
+    if not m:
+        sys.exit(f"{note.name}: no deck-url stored, so it can't be re-imported.")
+    import_deck(m.group(1).strip(), out_dir, force=True, own=False,
+                deck_id=deck_id)
+
+
+def _note_decklist(text: str) -> list[tuple[int, str]] | None:
+    """The deck's card list as stored in its note — commanders first, exactly
+    as written. The --reimport fallback when the live source can't be fetched.
+    (Names aren't split out of the commander frontmatter: a single commander
+    name can itself contain a comma, e.g. 'Atraxa, Praetors' Voice'.)
+    """
+    block = re.search(r"## 📜 Deck List\s*```\n(.*?)```", text, re.S)
+    if not block:
+        return None
+    decklist = [p for p in map(parse_card_line, block.group(1).splitlines()) if p]
+    return decklist or None
+
+
+def reimport(out_dir: Path, deck_id: int | None) -> None:
+    """Refresh deck lists and card art without touching prices. For each note
+    (or one, by id): re-fetch the list from its source (falling back to the
+    list stored in the note if that fails), re-download the commander art, and
+    rebuild the card gallery from fresh images. Price, buy and Cheapest Build
+    sections are left exactly as they are — run --recheck to refresh those.
+    """
+    ids = deck_id_map(out_dir)
+    if deck_id is not None:
+        if deck_id not in ids:
+            sys.exit(f"No deck with id {deck_id}. Run --list to see the ids.")
+        targets = {deck_id: ids[deck_id]}
+    else:
+        targets = ids
+    if not targets:
+        sys.exit(f"No deck notes found in {out_dir}")
+
+    for did, note in sorted(targets.items()):
+        text = note.read_text(encoding="utf-8")
+        url_m = re.search(r"^deck-url: (.+)$", text, re.M)
+        if not url_m:
+            print(f"[{did}] {note.name}: no deck-url — skipped")
+            continue
+        deck_url = url_m.group(1).strip()
+
+        deck = None
+        try:
+            deck = fetch_deck(resolve_source(deck_url))
+        except (SystemExit, Exception) as exc:  # any failure → stored-list fallback
+            print(f"[{did}] {note.name}: live fetch failed ({exc}) — "
+                  "using the list stored in the note")
+        if deck and deck.get("commanders"):
+            mainboard = sorted(deck["mainboard"], key=lambda c: c[1].lower())
+            decklist = [(1, n) for n in deck["commanders"]] + mainboard
+            primary = deck["commanders"][0]
+        else:
+            decklist = _note_decklist(text)
+            if not decklist:
+                print(f"[{did}] {note.name}: no stored list to fall back on — skipped")
+                continue
+            primary = decklist[0][1]  # listing puts the commander first
+
+        # Prices/buy sections are left untouched, so warn if the live list
+        # drifted from what those sections were priced against.
+        list_changed = set(decklist) != set(_note_decklist(text) or [])
+
+        # Commander banner: refresh the local jpg and swap just the URL,
+        # leaving the existing alt text (and everything else) alone.
+        image_path = out_dir / "Attachments" / f"{note.stem}.jpg"
+        image_path.parent.mkdir(exist_ok=True)
+        image_url = fetch_commander_art(primary, image_path)
+        text = re.sub(r"(!\[[^\]]*\|290\]\()[^)]*(\))",
+                      lambda mm: f"{mm.group(1)}{image_url}{mm.group(2)}",
+                      text, count=1)
+
+        # Deck List block — replace with the (possibly updated) list
+        listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
+        text = re.sub(r"(## 📜 Deck List\s*```\n).*?(```)",
+                      lambda m: f"{m.group(1)}{listing}\n{m.group(2)}",
+                      text, count=1, flags=re.S)
+
+        # Card gallery — fresh images only, no price lookups
+        imgs = fetch_card_images([n for _, n in decklist])
+        cells = [(imgs.get(name.lower()), f"{name}{f' ×{qty}' if qty > 1 else ''}")
+                 for qty, name in decklist]
+        gallery = render_card_gallery(cells)
+        if "### 🖼️ Card Gallery" in text:
+            text = re.sub(r"### 🖼️ Card Gallery\n.*?(?=\n## 📜 Deck List)",
+                          lambda _: gallery, text, count=1, flags=re.S)
+        else:
+            text = text.replace("## 📜 Deck List", f"{gallery}\n\n## 📜 Deck List", 1)
+
+        note.write_text(text, encoding="utf-8")
+        changed = (f" — list changed, run --recheck {did} to refresh prices"
+                   if list_changed else "")
+        print(f"[{did}] {note.name}: list + art refreshed "
+              f"({len(decklist)} cards){changed}")
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="mtg_deck_importer.py",
+        description="Turn a Moxfield/EDHREC deck URL or a .txt decklist into an "
+                    "Obsidian deck note with prices, a buy list and card galleries.",
+        epilog=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "source", nargs="?",
+        help="Moxfield/EDHREC deck URL, or a path to a .txt decklist")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="regenerate an existing note (your review sections are kept)")
+    parser.add_argument(
+        "--own", action="store_true",
+        help="append the whole deck to _Collection.md as owned before comparing")
+    parser.add_argument(
+        "--recheck", nargs="?", const="__all__", default=None, metavar="ID",
+        help="no ID: refresh every note's prices/buy list from the lists "
+             "already in the notes (no site fetching). With an ID (see --list): "
+             "full re-import of just that deck (list + prices + art)")
+    parser.add_argument(
+        "--reimport", nargs="?", const="__all__", default=None, metavar="ID",
+        help="refresh deck lists and card art from source WITHOUT new prices; "
+             "all notes, or one by ID (see --list)")
+    parser.add_argument(
+        "--list", action="store_true", dest="list_ids",
+        help="list every deck's id and name, then exit")
+    return parser
+
+
+def _parse_id(val: str) -> int:
+    try:
+        return int(val)
+    except ValueError:
+        sys.exit(f"Deck id must be a number, got {val!r} — run --list to see ids.")
+
+
+def main() -> None:
+    parser = build_arg_parser()
+    args = parser.parse_args()
+
+    if args.list_ids:
+        list_decks(resolve_out_dir())
+        return
+    if args.recheck is not None:
+        if args.source:
+            parser.error("--recheck takes an optional deck id, not a URL/file.")
+        out_dir = resolve_out_dir()
+        if args.recheck == "__all__":
+            recheck_all(out_dir)
+        else:
+            recheck_one(out_dir, _parse_id(args.recheck))
+        return
+    if args.reimport is not None:
+        if args.source:
+            parser.error("--reimport takes an optional deck id, not a URL/file.")
+        out_dir = resolve_out_dir()
+        reimport(out_dir, None if args.reimport == "__all__"
+                 else _parse_id(args.reimport))
+        return
+    if not args.source:
+        parser.error("a deck URL or .txt decklist path is required "
+                     "(or use --recheck / --reimport / --list)")
+    import_deck(args.source, resolve_out_dir(), force=args.force, own=args.own)
 
 
 if __name__ == "__main__":

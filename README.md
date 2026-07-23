@@ -15,14 +15,36 @@ python mtg_deck_importer.py "path/to/My Deck Name.txt"
 Flags: `--force` regenerates an existing note; `--own` adds the whole deck
 to your collection (see below). Run `--help` for the full list.
 
+Every note carries a stable **deck id** in its frontmatter (`deck-id:`), so a
+single deck can be targeted by number. `python mtg_deck_importer.py --list`
+prints the id ↔ deck name for every note. Ids are assigned on the fly and
+never renumber an existing deck.
+
 **Updated your collection (or just want fresh prices)?**
-`python mtg_deck_importer.py --recheck` (no URL) refreshes *every* deck note
+`python mtg_deck_importer.py --recheck` (no id) refreshes *every* deck note
 — deck value table, Priciest/All Card Prices, both 🖼️ card galleries, the
 💸 Cheapest Build, and the 🛒 Cards to Buy comparison against the current
 `_Collection.md` — using the deck list stored in each note. No site fetching, no browser windows; review sections and the
 deck list itself are untouched. Works even for decks whose original source
 is gone. (Scryfall rate-limits heavy bursts; the app backs off and retries,
 so a big library can take a few minutes.)
+
+**Just one deck?** `--recheck <id>` (e.g. `--recheck 7`) does a **full
+re-import** of that single deck instead: re-fetches its list from source,
+pulls fresh prices, and refreshes the art — the whole pipeline, scoped to one
+note (review sections still preserved).
+
+**Fresh art without re-pricing?** `python mtg_deck_importer.py --reimport`
+re-fetches every deck's list from its source (or one deck with
+`--reimport <id>`), re-downloads the commander art, and rebuilds the 🖼️ card
+gallery from fresh Scryfall images — but **skips the market-price refresh
+entirely**. The price, buy, and 💸 Cheapest Build sections are left exactly as
+they are (run `--recheck` to update those). Each list is re-fetched from its
+source (Moxfield/EDHREC URL, or the archived `.txt`); if that fetch fails it
+falls back to the deck list already stored in the note, so it works offline
+too. Handy for backfilling galleries into older notes cheaply — if a live
+re-fetch changes a deck's list, it flags the deck so you know to `--recheck`
+it for matching prices.
 
 ## 🌐 Supported sources
 
