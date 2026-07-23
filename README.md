@@ -20,19 +20,22 @@ single deck can be targeted by number. `python mtg_deck_importer.py --list`
 prints the id ↔ deck name for every note. Ids are assigned on the fly and
 never renumber an existing deck.
 
-**Updated your collection (or just want fresh prices)?**
-`python mtg_deck_importer.py --recheck` (no id) refreshes *every* deck note
-— deck value table, Priciest/All Card Prices, both 🖼️ card galleries, the
-💸 Cheapest Build, and the 🛒 Cards to Buy comparison against the current
-`_Collection.md` — using the deck list stored in each note. No site fetching, no browser windows; review sections and the
-deck list itself are untouched. Works even for decks whose original source
-is gone. (Scryfall rate-limits heavy bursts; the app backs off and retries,
-so a big library can take a few minutes.)
+**Updated your collection, or edited some decks?**
+`python mtg_deck_importer.py --recheck` (no id) refreshes *every* deck note by
+**re-importing it from its original source** — the Moxfield/EDHREC URL, or the
+archived `.txt` in `./imports` — so deck edits, fresh prices, and fresh art
+(commander image + both 🖼️ galleries) all land, along with the 💸 Cheapest
+Build and the 🛒 Cards to Buy comparison against the current `_Collection.md`.
+If a deck's source can't be reached (dead link, file gone, offline), that deck
+falls back to a price/buy refresh from the list stored in the note, so the run
+never stops and gone-source decks still update. Review sections are always
+preserved. (Moxfield decks each open a Chrome window, and Scryfall rate-limits
+heavy bursts — so a big library can take a while.)
 
-**Just one deck?** `--recheck <id>` (e.g. `--recheck 7`) does a **full
-re-import** of that single deck instead: re-fetches its list from source,
-pulls fresh prices, and refreshes the art — the whole pipeline, scoped to one
-note (review sections still preserved).
+**Just one deck?** `--recheck <id>` (e.g. `--recheck 7`) does the same **full
+re-import** for a single deck: re-fetches its list from source, pulls fresh
+prices, and refreshes the art — scoped to one note (review sections preserved).
+Run `--list` to find the id.
 
 **Fresh art without re-pricing?** `python mtg_deck_importer.py --reimport`
 re-fetches every deck's list from its source (or one deck with
@@ -45,6 +48,68 @@ falls back to the deck list already stored in the note, so it works offline
 too. Handy for backfilling galleries into older notes cheaply — if a live
 re-fetch changes a deck's list, it flags the deck so you know to `--recheck`
 it for matching prices.
+
+## 🧾 Command reference
+
+```
+python mtg_deck_importer.py [--force] [--own] <source>
+python mtg_deck_importer.py --recheck [id]
+python mtg_deck_importer.py --reimport [id]
+python mtg_deck_importer.py --list
+python mtg_deck_importer.py --help
+```
+
+`<source>` is a Moxfield URL, an EDHREC deckpreview URL, or a path to a `.txt`
+decklist.
+
+| Option | What it does |
+|--------|--------------|
+| *(none)* | Import `<source>` into a new deck note (prices, buy list, galleries, art). Errors if a note for that deck already exists. |
+| `--force` | Regenerate an **existing** note for `<source>` in place — refreshes the deck list, prices, galleries and art while **keeping your review sections**. |
+| `--own` | Before comparing, append the whole deck to `_Collection.md` as owned (skipped if already listed). Use when you actually buy a wishlist precon. Combine with `<source>` (usually with `--force`). |
+| `--recheck` | *(no id)* Refresh **every** note by re-importing from its original source (Moxfield/EDHREC URL, or the `.txt` in `./imports`): deck edits, fresh prices, fresh art (commander + galleries), 💸 Cheapest Build and 🛒 Cards to Buy. Falls back to the note's stored list if a source can't be reached. Moxfield decks each open a browser. |
+| `--recheck <id>` | Same **full re-import**, scoped to one deck by id. |
+| `--reimport` | *(no id)* Refresh **every** note's deck list and card art from source **without** re-pricing. Rebuilds the 🖼️ card gallery and commander art; leaves price / buy / Cheapest Build sections untouched. Falls back to the note's stored list if a source fetch fails. |
+| `--reimport <id>` | Same as above, for a single deck by id. |
+| `--list` | Print every deck's id and name, then exit. Use it to find the id for `--recheck <id>` / `--reimport <id>`. |
+| `--help` | Show the built-in help and exit. |
+
+Deck ids come from the `deck-id:` field in each note's frontmatter — run
+`--list` to see them.
+
+### 📋 Examples
+
+```
+# Import a deck (browser opens briefly for Moxfield)
+python mtg_deck_importer.py https://moxfield.com/decks/Na_36cWsnEOhEGT_o27XgQ
+
+# Import an EDHREC deck preview (no browser)
+python mtg_deck_importer.py https://edhrec.com/deckpreview/abc123
+
+# Import a local decklist (first line is the commander)
+python mtg_deck_importer.py "My Krenko Deck.txt"
+
+# You edited the deck on the site — pull the changes into its note
+python mtg_deck_importer.py --force https://moxfield.com/decks/Na_36cWsnEOhEGT_o27XgQ
+
+# You bought a wishlist precon — mark it owned and refresh the note
+python mtg_deck_importer.py --own --force "Cloud Limit Break Precon.txt"
+
+# See every deck's id and name
+python mtg_deck_importer.py --list
+
+# Re-import every deck from source — deck edits, fresh prices, fresh art
+python mtg_deck_importer.py --recheck
+
+# Fully re-import just deck 7 (fresh list + prices + art)
+python mtg_deck_importer.py --recheck 7
+
+# Backfill galleries / refresh art everywhere, no re-pricing
+python mtg_deck_importer.py --reimport
+
+# Refresh art for just deck 7, no re-pricing
+python mtg_deck_importer.py --reimport 7
+```
 
 ## 🌐 Supported sources
 

@@ -19,12 +19,13 @@ when you buy a precon you'd imported as a wishlist deck.
 Every note carries a stable deck-id (shown by `--list`) so a single deck can
 be targeted by number.
 
-`python mtg_deck_importer.py --recheck` (no ID) refreshes every note's
-Cards to Buy section against the current _Collection.md, using the deck
-list stored in each note — run it after updating your collection. No site
-fetching, no browser; review sections and everything else stay untouched.
-`--recheck <id>` instead fully re-imports that one deck (list + prices + art)
-from its source.
+`python mtg_deck_importer.py --recheck` (no ID) refreshes every note by
+re-importing it from its original source — a Moxfield/EDHREC URL or the
+archived .txt in ./imports — so deck edits, fresh prices and fresh art all
+land, plus the Cards to Buy comparison against the current _Collection.md. A
+deck whose source can't be reached falls back to a price/buy refresh from the
+list stored in its note. Review sections are always preserved. `--recheck
+<id>` does the same for a single deck (see --list for ids).
 
 `python mtg_deck_importer.py --reimport` refreshes deck lists and card art
 without fetching new prices — for every note, or one with `--reimport <id>`.
@@ -1072,10 +1073,12 @@ def list_decks(out_dir: Path) -> None:
 
 
 def recheck_all(out_dir: Path) -> None:
-    """Refresh every deck note's price data and collection comparison using
-    the deck list stored in the note itself — no site fetching, no browser.
-    Rewrites the value table, price tables, Cards to Buy, and frontmatter;
-    review sections and everything else stay untouched.
+    """Refresh every deck note by re-importing it from its original source —
+    a Moxfield/EDHREC URL or the archived .txt in ./imports — so deck edits,
+    fresh prices and fresh art (commander + galleries) all land. If a source
+    can't be reached (dead link, file gone, offline), that deck falls back to
+    a price/buy refresh from the list stored in the note. Review sections are
+    preserved throughout.
     """
     collection = load_collection(out_dir)
     if not collection:
@@ -1087,56 +1090,70 @@ def recheck_all(out_dir: Path) -> None:
         sys.exit(f"No deck notes found in {out_dir}")
 
     for did, note in sorted(ids.items()):
-        text = note.read_text(encoding="utf-8")
-        block = re.search(r"## 📜 Deck List\s*```\n(.*?)```", text, re.S)
-        if not block:
-            print(f"{note.name}: no deck list found — skipped")
-            continue
-        decklist = []
-        for line in block.group(1).splitlines():
-            parsed = parse_card_line(line)
-            if parsed:
-                decklist.append(parsed)
-        prices = fetch_prices([n for _, n in decklist])
-        report = price_report(decklist, prices)
-        buy = buy_report(decklist, owned, prices)
-        rates = report["rates"]
+        url_m = re.search(r"^deck-url: (.+)$", note.read_text(encoding="utf-8"), re.M)
+        source = url_m.group(1).strip() if url_m else None
+        if source:
+            try:
+                import_deck(source, out_dir, force=True, own=False, deck_id=did)
+                continue
+            except (SystemExit, Exception) as exc:  # source unreachable → fall back
+                print(f"[{did}] {note.name}: source refresh failed ({exc}) — "
+                      "refreshing prices from the stored list")
+        _recheck_from_stored(did, note, collection_name, owned, today)
 
-        # Deck value table + caption (tolerate Obsidian's table re-padding)
-        text = re.sub(r"\| Source\s*\|\s*Value\s*\|.*?\*💰[^\n]*\*",
-                      lambda _: render_value_block(report, today), text,
-                      count=1, flags=re.S)
-        # Priciest / All Card Prices tables
-        text = re.sub(r"## 🏆 Priciest Cards\n.*?(?=## 📜 Deck List)",
-                      lambda _: render_card_tables(report), text,
-                      count=1, flags=re.S)
-        # Cards to Buy
-        buy_sec = render_buy_section(buy, collection_name, rates)
-        if "## 🛒 Cards to Buy" in text:
-            text = re.sub(r"## 🛒 Cards to Buy\n.*?(?=## 🏆 Priciest Cards)",
-                          lambda _: buy_sec, text, count=1, flags=re.S)
-        else:
-            text = text.replace("## 🏆 Priciest Cards",
-                                buy_sec + "## 🏆 Priciest Cards", 1)
-        # Frontmatter: rebuild all price/owned/buy fields, stamp price-date
-        text = re.sub(r"^(price-(eur|gbp|usd|tix|mp)|owned|buy-eur|buy-gbp|buy-mp): .*\n",
-                      "", text, flags=re.M)
-        fm = price_frontmatter_str(report) + "\n" + buy_frontmatter(buy, rates)
-        text = text.replace("\nprice-date:", f"\n{fm}\nprice-date:", 1)
-        text = re.sub(r"^price-date: .*$", f"price-date: {today}", text,
-                      count=1, flags=re.M)
-        # Cheapest Build (sits at the very bottom — replace or append)
-        budget_section = render_budget_list(decklist, prices, report)
-        if "## 💸 Cheapest Build" in text:
-            text = re.sub(r"## 💸 Cheapest Build\n.*\Z",
-                          lambda _: budget_section, text, count=1, flags=re.S)
-        else:
-            text = text.rstrip("\n") + "\n\n" + budget_section
 
-        note.write_text(text, encoding="utf-8")
-        print(f"[{did}] {note.name}: value ~EUR {report['totals']['eur']:,.2f}"
-              f" — own {buy['owned_unique']}/{buy['unique']}"
-              f" — to buy {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f})")
+def _recheck_from_stored(did: int, note: Path, collection_name: str,
+                         owned: dict[str, int], today: str) -> None:
+    """Refresh a note's prices, galleries, Cards to Buy and Cheapest Build from
+    the deck list already stored in it — no site fetching, no art re-download.
+    The --recheck fallback when the original source can't be reached.
+    """
+    text = note.read_text(encoding="utf-8")
+    block = re.search(r"## 📜 Deck List\s*```\n(.*?)```", text, re.S)
+    if not block:
+        print(f"[{did}] {note.name}: no deck list found — skipped")
+        return
+    decklist = [p for p in map(parse_card_line, block.group(1).splitlines()) if p]
+    prices = fetch_prices([n for _, n in decklist])
+    report = price_report(decklist, prices)
+    buy = buy_report(decklist, owned, prices)
+    rates = report["rates"]
+
+    # Deck value table + caption (tolerate Obsidian's table re-padding)
+    text = re.sub(r"\| Source\s*\|\s*Value\s*\|.*?\*💰[^\n]*\*",
+                  lambda _: render_value_block(report, today), text,
+                  count=1, flags=re.S)
+    # Priciest / All Card Prices tables
+    text = re.sub(r"## 🏆 Priciest Cards\n.*?(?=## 📜 Deck List)",
+                  lambda _: render_card_tables(report), text,
+                  count=1, flags=re.S)
+    # Cards to Buy
+    buy_sec = render_buy_section(buy, collection_name, rates)
+    if "## 🛒 Cards to Buy" in text:
+        text = re.sub(r"## 🛒 Cards to Buy\n.*?(?=## 🏆 Priciest Cards)",
+                      lambda _: buy_sec, text, count=1, flags=re.S)
+    else:
+        text = text.replace("## 🏆 Priciest Cards",
+                            buy_sec + "## 🏆 Priciest Cards", 1)
+    # Frontmatter: rebuild all price/owned/buy fields, stamp price-date
+    text = re.sub(r"^(price-(eur|gbp|usd|tix|mp)|owned|buy-eur|buy-gbp|buy-mp): .*\n",
+                  "", text, flags=re.M)
+    fm = price_frontmatter_str(report) + "\n" + buy_frontmatter(buy, rates)
+    text = text.replace("\nprice-date:", f"\n{fm}\nprice-date:", 1)
+    text = re.sub(r"^price-date: .*$", f"price-date: {today}", text,
+                  count=1, flags=re.M)
+    # Cheapest Build (sits at the very bottom — replace or append)
+    budget_section = render_budget_list(decklist, prices, report)
+    if "## 💸 Cheapest Build" in text:
+        text = re.sub(r"## 💸 Cheapest Build\n.*\Z",
+                      lambda _: budget_section, text, count=1, flags=re.S)
+    else:
+        text = text.rstrip("\n") + "\n\n" + budget_section
+
+    note.write_text(text, encoding="utf-8")
+    print(f"[{did}] {note.name}: value ~EUR {report['totals']['eur']:,.2f}"
+          f" — own {buy['owned_unique']}/{buy['unique']}"
+          f" — to buy {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f})")
 
 
 def resolve_out_dir() -> Path:
