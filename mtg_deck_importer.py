@@ -169,12 +169,16 @@ def scryfall_card_image(card: dict, size: str = "small") -> str | None:
     return uris.get(size) if uris else None
 
 
-def card_prints_info(name: str) -> dict:
+def card_prints_info(name: str, canonical: str | None = None) -> dict:
     """One prints lookup per card, reused for two jobs: (a) every name the
     card can appear under — canonical plus Universes Beyond flavor names
     (the Marvel precons print Spark Double as "Loki's Double"); (b) the
     cheapest paper printing, since a flavor-named skin is the same card and
     the plain version is often cheaper.
+
+    Pass `canonical` when the exact Scryfall name is already known (the bulk
+    price fetch returns it) — that skips the name-resolution request and
+    halves the Scryfall traffic, which is what the rate limit actually bites.
     """
     if not _prints_cache_loaded:
         _load_prints_cache()
@@ -190,16 +194,21 @@ def card_prints_info(name: str) -> dict:
         print(f"Scryfall:  ...{_prints_fetched} cards looked up")
     info = {"aliases": {key}, "canonical": name, "cheapest": None,
             "ts": time.time()}
-    r = http("GET", SCRYFALL_NAMED, params={"exact": name})
-    if r.status_code == 200:
-        info["canonical"] = r.json()["name"]
-        info["aliases"].add(info["canonical"].lower())
+    if canonical is None:
+        r = http("GET", SCRYFALL_NAMED, params={"exact": name})
+        if r.status_code == 200:
+            canonical = r.json()["name"]
+        elif r.status_code != 404:  # throttled/5xx — don't cache the failure
+            info["ts"] = 0
+    if canonical is not None:
+        info["canonical"] = canonical
+        info["aliases"].add(canonical.lower())
         # Double-faced cards: let a front-face-only name in the collection
         # ("Malakir Rebirth") match the full "A // B" deck name
-        if "//" in info["canonical"]:
-            info["aliases"].add(info["canonical"].split("//")[0].strip().lower())
+        if "//" in canonical:
+            info["aliases"].add(canonical.split("//")[0].strip().lower())
         s = http("GET", SCRYFALL_SEARCH,
-                 params={"q": f'!"{info["canonical"]}" game:paper',
+                 params={"q": f'!"{canonical}" game:paper',
                          "unique": "prints"})
         if s.status_code == 200:
             best = None
@@ -220,6 +229,8 @@ def card_prints_info(name: str) -> dict:
                                    "img": scryfall_card_image(c)})
             if best:
                 info["cheapest"] = best[1]
+        elif s.status_code != 404:  # throttled/5xx — retry it next run instead
+            info["ts"] = 0
     _card_info_cache[key] = info
     # Long runs can be interrupted (Ctrl-C, crashes) — checkpoint the cache
     # periodically so hundreds of slow lookups are never lost with the process
@@ -244,7 +255,8 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
         info = None
         if have < qty:
             # Not obviously owned — check flavor-name aliases before giving up
-            info = card_prints_info(name)
+            info = card_prints_info(name,
+                                    (prices.get(name.lower()) or {}).get("name"))
             have = sum(owned.get(a, 0) for a in info["aliases"])
         have = min(have, qty)
         owned_copies += have
@@ -270,27 +282,34 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
 
 
 _last_scryfall_call = 0.0
-SCRYFALL_MIN_INTERVAL = 0.1  # Scryfall asks for no more than ~10 requests/sec
+SCRYFALL_MIN_INTERVAL = 0.25  # Scryfall documents ~10 req/s; stay well under
+_scryfall_penalty = 0.0  # extra per-call gap, grown each time Scryfall 429s us
 
 
 def http(method: str, url: str, **kwargs) -> requests.Response:
     """Request with polite backoff on 429/5xx and automatic pacing of Scryfall
-    calls — one place enforces the ~10 req/s limit so no call site can forget.
+    calls — one place enforces the rate limit so no call site can forget. A
+    429 from Scryfall permanently widens this run's gap between calls (up to
+    1s): trading a little steady-state speed beats eating 60s penalty waits.
     """
-    global _last_scryfall_call
+    global _last_scryfall_call, _scryfall_penalty
     throttle = "api.scryfall.com" in url
     r = None
     for attempt in range(5):
         if throttle:
             gap = time.time() - _last_scryfall_call
-            if gap < SCRYFALL_MIN_INTERVAL:
-                time.sleep(SCRYFALL_MIN_INTERVAL - gap)
+            min_gap = SCRYFALL_MIN_INTERVAL + _scryfall_penalty
+            if gap < min_gap:
+                time.sleep(min_gap - gap)
         r = SESSION.request(method, url, timeout=30, **kwargs)
         if throttle:
             _last_scryfall_call = time.time()
         if r.status_code == 429 or r.status_code >= 500:
+            if throttle and r.status_code == 429:
+                _scryfall_penalty = min(1.0, _scryfall_penalty + 0.25)
+            host = url.split("/")[2]
             wait = float(r.headers.get("Retry-After", 2)) + attempt
-            print(f"Throttled: server asked us to slow down — waiting {wait:.0f}s")
+            print(f"Throttled: {host} asked us to slow down — waiting {wait:.0f}s")
             time.sleep(wait)
             continue
         return r
@@ -537,6 +556,7 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
         for card in r.json().get("data", []):
             p = card.get("prices", {})
             entry = {
+                "name": card["name"],  # canonical spelling, saves a lookup later
                 "eur": float(p["eur"]) if p.get("eur") else None,
                 "usd": float(p["usd"]) if p.get("usd") else None,
                 "tix": float(p["tix"]) if p.get("tix") else None,
@@ -556,9 +576,11 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
         entry = prices.get(name.lower())
         if entry and (entry["eur"] is not None or entry["usd"] is not None):
             continue
-        cheap = card_prints_info(name).get("cheapest")
+        info = card_prints_info(name, (entry or {}).get("name"))
+        cheap = info.get("cheapest")
         if cheap:
             prices[name.lower()] = {
+                "name": info["canonical"],
                 "eur": cheap.get("eur"),
                 "usd": cheap.get("usd"),
                 "tix": entry["tix"] if entry else None,
@@ -691,7 +713,7 @@ def budget_choices(decklist: list[tuple[int, str]],
              "eur": deck_eur, "mp": p.get("mp"), "img": p.get("img"),
              "deck_eur": deck_eur, "changed": False}
         if (deck_eur or p.get("usd") or 0) > 0.50:
-            ch = card_prints_info(name).get("cheapest")
+            ch = card_prints_info(name, p.get("name")).get("cheapest")
             if ch and _sane_cheaper(ch["eur"], deck_eur):
                 printed = ch["printed_as"] \
                     if ch["printed_as"].lower() != name.lower() else name
