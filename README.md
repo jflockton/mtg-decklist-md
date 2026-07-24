@@ -23,7 +23,7 @@ never renumber an existing deck.
 **Updated your collection, or edited some decks?**
 `python mtg_deck_importer.py --recheck` (no id) refreshes *every* deck note by
 **re-importing it from its original source** — the Moxfield/EDHREC URL, or the
-archived `.txt` in `./imports` — so deck edits, fresh prices, and fresh
+archived `.txt` in the vault's `imports/` folder — so deck edits, fresh prices, and fresh
 🖼️ galleries all land, along with the 💸 Cheapest Build and both 🛒 Cards to
 Complete comparisons against the current `_Collection.md`. The commander art
 is reused from the existing note (it's a static image) unless the commander
@@ -69,7 +69,7 @@ decklist.
 | *(none)* | Import `<source>` into a new deck note (prices, buy list, galleries, art). Errors if a note for that deck already exists. |
 | `--force` | Regenerate an **existing** note for `<source>` in place — refreshes the deck list, prices, galleries and art while **keeping your review sections**. |
 | `--own` | Before comparing, append the whole deck to `_Collection.md` as owned (skipped if already listed). Use when you actually buy a wishlist precon. Combine with `<source>` (usually with `--force`). |
-| `--recheck` | *(no id)* Refresh **every** note by re-importing from its original source (Moxfield/EDHREC URL, or the `.txt` in `./imports`): deck edits, fresh prices, fresh galleries, 💸 Cheapest Build and both 🛒 Cards to Complete sections. Commander art is reused unless the commander changed. Falls back to the note's stored list if a source can't be reached. Moxfield decks each open a browser. |
+| `--recheck` | *(no id)* Refresh **every** note by re-importing from its original source (Moxfield/EDHREC URL, or the `.txt` in the vault's `imports/`): deck edits, fresh prices, fresh galleries, 💸 Cheapest Build and both 🛒 Cards to Complete sections. Commander art is reused unless the commander changed. Falls back to the note's stored list if a source can't be reached. Moxfield decks each open a browser. |
 | `--recheck <id>` | Same **full re-import**, scoped to one deck by id. |
 | `--reimport` | *(no id)* Refresh **every** note's deck list and card art from source **without** re-pricing. Rebuilds the 🖼️ card gallery and commander art; leaves price / buy / Cheapest Build sections untouched. Falls back to the note's stored list if a source fetch fails. |
 | `--reimport <id>` | Same as above, for a single deck by id. |
@@ -126,8 +126,12 @@ For a `.txt` file: one `1 Card Name` per line (the usual export format),
 `Krenko Goblin Swarm.txt` → deck "Krenko Goblin Swarm". Call the file
 whatever you like; the name only sets the note's title and identifies the
 deck on re-import. Artwork and prices still come from Scryfall as normal.
-After a successful import the file is **moved to `./imports/`** (gitignored)
-as your record of what was imported; the note's `deck-url` points there.
+After a successful import the file is **moved to `imports/` inside your
+vault folder** — it syncs with the vault, so every machine that has the
+vault can re-import the deck (`--recheck`/`--reimport` from anywhere); the
+note's `deck-url` points there. Files archived by older versions into the
+repo's local `./imports/` are still found as a fallback — move them into
+the vault `imports/` to make them available on all machines.
 
 🛡️ An existing deck note is **never overwritten without `--force`** — and
 even then, **anything you've written in the review sections is preserved**:

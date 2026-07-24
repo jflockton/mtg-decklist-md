@@ -21,7 +21,8 @@ be targeted by number.
 
 `python mtg_deck_importer.py --recheck` (no ID) refreshes every note by
 re-importing it from its original source — a Moxfield/EDHREC URL or the
-archived .txt in ./imports — so deck edits, fresh prices and fresh art all
+archived .txt in the vault's imports/ folder — so deck edits, fresh
+prices and fresh art all
 land, plus the Cards to Complete comparisons against the current _Collection.md. A
 deck whose source can't be reached falls back to a price/buy refresh from the
 list stored in its note. Review sections are always preserved. `--recheck
@@ -50,11 +51,12 @@ import atexit
 import json
 import os
 import re
+import shutil
 import sys
 import time
 from datetime import date
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import requests
 from dotenv import load_dotenv
@@ -1248,7 +1250,8 @@ def list_decks(out_dir: Path) -> None:
 
 def recheck_all(out_dir: Path) -> None:
     """Refresh every deck note by re-importing it from its original source —
-    a Moxfield/EDHREC URL or the archived .txt in ./imports — so deck edits,
+    a Moxfield/EDHREC URL or the archived .txt in the vault's imports/ folder
+    — so deck edits,
     fresh prices and fresh galleries all land (commander art is reused from
     the note unless the commander changed). If a source
     can't be reached (dead link, file gone, offline), that deck falls back to
@@ -1328,13 +1331,20 @@ def resolve_out_dir() -> Path:
     return out
 
 
-def resolve_source(source: str) -> str:
-    """A note's deck-url for a .txt import is stored relative to the script
-    (e.g. 'imports/My Deck.txt'). Point that at the archived file so the deck
-    can be re-imported from it.
+def resolve_source(source: str, out_dir: Path) -> str:
+    """Find the archived .txt behind a note's deck-url. Archives live in
+    imports/ INSIDE the vault folder (synced across machines, unlike the
+    repo), so every machine can fully re-import a .txt deck. Legacy locations
+    still resolve: a path relative to the script, and the old script-local
+    imports/ folder. PureWindowsPath parses the name out of either slash
+    style ('imports/mill.txt', '.\\my deck.txt').
     """
-    if source.lower().endswith(".txt") and not Path(source).is_file():
-        candidate = SCRIPT_DIR / source
+    if not source.lower().endswith(".txt") or Path(source).is_file():
+        return source
+    name = PureWindowsPath(source.replace("/", "\\")).name
+    for candidate in (out_dir / "imports" / name,
+                      SCRIPT_DIR / source,
+                      SCRIPT_DIR / "imports" / name):
         if candidate.is_file():
             return str(candidate)
     return source
@@ -1347,12 +1357,13 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
     new deck it is inherited from a matched note or freshly assigned.
     """
     deck_url = source
-    deck = fetch_deck(resolve_source(source))
+    deck = fetch_deck(resolve_source(source, out_dir))
     if not deck["commanders"]:
         sys.exit("No commander found on this deck — is it a Commander deck?")
 
-    # Imported .txt files are archived to ./imports (gitignored) after a
-    # successful run — the note's deck-url points at the archived copy
+    # Imported .txt files are archived to imports/ inside the vault after a
+    # successful run — synced with the vault, so any machine can re-import;
+    # the note's deck-url points at the archived copy
     txt_src = Path(deck["txt_path"]).resolve() if deck.get("txt_path") else None
     if txt_src:
         deck_url = f"imports/{txt_src.name}"
@@ -1439,11 +1450,11 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
     )
 
     if txt_src:
-        imports_dir = SCRIPT_DIR / "imports"
+        imports_dir = out_dir / "imports"  # in the vault → syncs to every machine
         imports_dir.mkdir(exist_ok=True)
         dest = imports_dir / txt_src.name
         if txt_src != dest.resolve():
-            txt_src.replace(dest)
+            shutil.move(str(txt_src), dest)  # move() survives cross-volume vaults
             print(f"Archived:  {dest}")
 
     total = sum(qty for qty, _ in decklist)
@@ -1523,7 +1534,7 @@ def reimport(out_dir: Path, deck_id: int | None) -> None:
 
         deck = None
         try:
-            deck = fetch_deck(resolve_source(deck_url))
+            deck = fetch_deck(resolve_source(deck_url, out_dir))
         except (SystemExit, Exception) as exc:  # any failure → stored-list fallback
             print(f"[{did}] {note.name}: live fetch failed ({exc}) — "
                   "using the list stored in the note")
