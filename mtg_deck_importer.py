@@ -22,7 +22,7 @@ be targeted by number.
 `python mtg_deck_importer.py --recheck` (no ID) refreshes every note by
 re-importing it from its original source — a Moxfield/EDHREC URL or the
 archived .txt in ./imports — so deck edits, fresh prices and fresh art all
-land, plus the Cards to Buy comparison against the current _Collection.md. A
+land, plus the Cards to Complete comparisons against the current _Collection.md. A
 deck whose source can't be reached falls back to a price/buy refresh from the
 list stored in its note. Review sections are always preserved. `--recheck
 <id>` does the same for a single deck (see --list for ids).
@@ -194,6 +194,10 @@ def card_prints_info(name: str) -> dict:
     if r.status_code == 200:
         info["canonical"] = r.json()["name"]
         info["aliases"].add(info["canonical"].lower())
+        # Double-faced cards: let a front-face-only name in the collection
+        # ("Malakir Rebirth") match the full "A // B" deck name
+        if "//" in info["canonical"]:
+            info["aliases"].add(info["canonical"].split("//")[0].strip().lower())
         s = http("GET", SCRYFALL_SEARCH,
                  params={"q": f'!"{info["canonical"]}" game:paper',
                          "unique": "prints"})
@@ -217,6 +221,10 @@ def card_prints_info(name: str) -> dict:
             if best:
                 info["cheapest"] = best[1]
     _card_info_cache[key] = info
+    # Long runs can be interrupted (Ctrl-C, crashes) — checkpoint the cache
+    # periodically so hundreds of slow lookups are never lost with the process
+    if _prints_fetched % 50 == 0:
+        _save_prints_cache()
     return info
 
 
@@ -226,7 +234,9 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
     costs (per-source totals use the already-fetched deck prices).
     """
     missing = []
+    owned_rows = []  # fully-covered cards, shown as ✅ in the shopping table
     totals = {"eur": 0.0, "usd": 0.0, "mp": 0.0}
+    unpriced = 0
     owned_unique = owned_copies = total_copies = 0
     for qty, name in decklist:
         total_copies += qty
@@ -240,15 +250,21 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
         owned_copies += have
         if have >= qty:
             owned_unique += 1
+            owned_rows.append((qty, name))
             continue
         need = qty - have
         p = prices.get(name.lower()) or {}
+        if p.get("eur") is None and p.get("usd") is None:
+            unpriced += 1
         totals["eur"] += (p.get("eur") or 0) * need
         totals["usd"] += (p.get("usd") or 0) * need
         totals["mp"] += (p.get("mp") or 0) * need
-        missing.append((need, name, p.get("eur"), p.get("usd"), p.get("mp"), info))
-    missing.sort(key=lambda c: c[2] or 0, reverse=True)
-    return {"missing": missing, "totals": totals,
+        missing.append({"need": need, "have": have, "name": name,
+                        "eur": p.get("eur"), "usd": p.get("usd"),
+                        "mp": p.get("mp"), "info": info})
+    missing.sort(key=lambda c: c["eur"] or 0, reverse=True)
+    return {"missing": missing, "owned_rows": owned_rows, "totals": totals,
+            "unpriced": unpriced,
             "owned_unique": owned_unique, "owned_copies": owned_copies,
             "unique": len(decklist), "total_copies": total_copies}
 
@@ -325,7 +341,8 @@ def manapool_index() -> dict[str, float]:
 
 
 def collection_path(out_dir: Path) -> Path:
-    return Path(os.environ.get("COLLECTION_FILE") or out_dir / "_Collection.md")
+    return Path(os.environ.get("COLLECTION_FILE")
+                or out_dir / "_Collection.md").expanduser()
 
 
 def add_deck_to_collection(out_dir: Path, deck_name: str,
@@ -354,7 +371,9 @@ def output_dir() -> Path:
             "VAULT_OUTPUT_DIR is not set.\n"
             "Copy .env.example to .env and point it at your vault's deck folder."
         )
-    return Path(value)
+    # ~ is expanded; write the path plainly in .env (no shell \-escapes —
+    # a .env file is not a shell script, spaces are fine as-is)
+    return Path(value).expanduser()
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +608,6 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
     totals = {"eur": 0.0, "usd": 0.0, "tix": 0.0, "mp": 0.0}
     coverage = {"eur": 0, "usd": 0, "tix": 0, "mp": 0}
     unpriced = []
-    priced_cards = []
     all_cards = []
     for qty, name in decklist:
         p = prices.get(name.lower())
@@ -602,12 +620,10 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
             if p.get(src) is not None:
                 totals[src] += p[src] * qty
                 coverage[src] += 1
-        priced_cards.append((name, p["eur"], p["usd"], p.get("mp")))
         all_cards.append((qty, name, p["eur"], p["usd"], p.get("mp"), img))
-    top = sorted(priced_cards, key=lambda c: c[1] or 0, reverse=True)[:10]
     all_cards.sort(key=lambda c: c[2] or 0, reverse=True)
     return {"totals": totals, "coverage": coverage, "unique": len(decklist),
-            "top": top, "all": all_cards, "unpriced": unpriced,
+            "all": all_cards, "unpriced": unpriced,
             "rates": fx_rates()}
 
 
@@ -650,75 +666,197 @@ def _card_gbp(eur, usd, rates):
     return None
 
 
-def buy_frontmatter(buy: dict, rates: dict | None) -> str:
+def _callout(title: str, body: str, kind: str = "note") -> str:
+    """An Obsidian collapsed callout (`> [!note]- Title`). Other GFM viewers
+    render it as a plain blockquote, which still reads fine.
+    """
+    quoted = "\n".join(f"> {ln}" if ln else ">" for ln in body.splitlines())
+    return f"> [!{kind}]- {title}\n>\n{quoted}"
+
+
+def budget_choices(decklist: list[tuple[int, str]],
+                   prices: dict[str, dict]) -> dict[str, dict]:
+    """For every deck card, the cheapest functionally-identical version to
+    buy: {lowercased deck name: {printed, set_name, set_code, eur, mp, img,
+    deck_eur, changed}}. Cards under €0.50 keep the deck's own version (there
+    is nothing meaningful to save on pennies) — the single source of truth
+    used by the Shopping List, Cheaper Printings and Cheapest Build sections,
+    so their totals always agree.
+    """
+    choices: dict[str, dict] = {}
+    for _qty, name in decklist:
+        p = prices.get(name.lower()) or {}
+        deck_eur = p.get("eur")
+        c = {"printed": name, "set_name": None, "set_code": None,
+             "eur": deck_eur, "mp": p.get("mp"), "img": p.get("img"),
+             "deck_eur": deck_eur, "changed": False}
+        if (deck_eur or p.get("usd") or 0) > 0.50:
+            ch = card_prints_info(name).get("cheapest")
+            if ch and _sane_cheaper(ch["eur"], deck_eur):
+                printed = ch["printed_as"] \
+                    if ch["printed_as"].lower() != name.lower() else name
+                c.update(printed=printed, set_name=ch["set"],
+                         set_code=set_code_map().get(ch["set"].lower()),
+                         eur=ch["eur"], img=ch.get("img") or c["img"],
+                         changed=True)
+        choices[name.lower()] = c
+    return choices
+
+
+def _choice_line(qty: int, choice: dict | None, name: str) -> str:
+    """A copy-paste decklist line for a chosen version — `(SET)` pins the
+    exact printing (Moxfield's import format) when a code is known.
+    """
+    if not choice:
+        return f"{qty} {name}"
+    code = choice.get("set_code")
+    return f"{qty} {choice['printed']} ({code.upper()})" if code \
+        else f"{qty} {choice['printed']}"
+
+
+def cheapest_buy(buy: dict, choices: dict[str, dict],
+                 rates: dict | None) -> dict:
+    """The missing cards priced at their cheapest versions: totals plus the
+    copy-paste Budget Buy List lines (alphabetical, like a store checklist).
+    """
+    totals = {"eur": 0.0, "mp": 0.0, "best_gbp": 0.0}
+    lines = []
+    for m in sorted(buy["missing"], key=lambda m: m["name"].lower()):
+        c = choices.get(m["name"].lower())
+        eur = c["eur"] if c else m["eur"]
+        mp = c["mp"] if c else m["mp"]
+        gbp_candidates = []
+        if rates:
+            if eur is not None:
+                gbp_candidates.append(eur * rates["eur_gbp"])
+            if mp is not None:
+                gbp_candidates.append(mp * rates["usd_gbp"])
+        totals["eur"] += (eur or 0) * m["need"]
+        totals["mp"] += (mp or 0) * m["need"]
+        totals["best_gbp"] += (min(gbp_candidates) if gbp_candidates else 0) * m["need"]
+        lines.append(_choice_line(m["need"], c, m["name"]))
+    return {"totals": totals, "lines": lines}
+
+
+def buy_frontmatter(buy: dict, rates: dict | None, cheap: dict | None) -> str:
     lines = [f"owned: {buy['owned_unique']}/{buy['unique']}",
              f"buy-eur: {buy['totals']['eur']:.2f}",
              f"buy-mp: {buy['totals']['mp']:.2f}"]
+    if cheap:
+        lines.append(f"buy-cheapest-eur: {cheap['totals']['eur']:.2f}")
     if rates:
         lines.append(f"buy-gbp: {buy['totals']['eur'] * rates['eur_gbp']:.2f}")
+        if cheap:
+            lines.append(
+                f"buy-cheapest-gbp: {cheap['totals']['eur'] * rates['eur_gbp']:.2f}")
     return "\n".join(lines)
 
 
-def render_buy_section(buy: dict, collection_name: str, rates: dict | None) -> str:
+def _owned_cell(qty: int) -> str:
+    return "✅ own" if qty == 1 else f"✅ ×{qty}"
+
+
+def _buy_cell(m: dict) -> str:
+    cell = f"🛒 {m['need']}"
+    return f"{cell} (have {m['have']})" if m["have"] else cell
+
+
+def render_buy_section(buy: dict, collection_name: str, rates: dict | None,
+                       cheap: dict | None) -> str:
+    """'Cards to Complete the Deck' — what the collection is missing, at the
+    deck's own versions: one table with 🛒 rows (missing, dearest first) and
+    ✅ rows (owned, off the totals), plus a copy-paste Buy List.
+    """
     summary = (f"Compared against `{collection_name}` — you own "
                f"**{buy['owned_unique']}/{buy['unique']}** cards "
                f"({buy['owned_copies']}/{buy['total_copies']} copies).")
     if not buy["missing"]:
-        return f"""## 🛒 Cards to Buy
+        return f"""## 🛒 Cards to Complete the Deck
 
 {summary}
-🎉 **You own every card in this deck — nothing to buy!**
-
-"""
+🎉 **You own every card in this deck — nothing to buy!**"""
     buy_gbp = _gbp_cell(buy["totals"]["eur"] * rates["eur_gbp"] if rates else None)
-    buy_rows = "\n".join(
-        f"| {name} | {need} | {_eur_cell(eur)} | {_usd_cell(usd)} | {_usd_cell(mp)} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
-        for need, name, eur, usd, mp, _ in buy["missing"]
-    )
-
-    # Same card, cheaper printing (incl. plain-MTG versions of
-    # Universes Beyond skins) — worth a table when it saves anything
-    cheaper = []
-    best_total_eur = 0.0
-    for need, name, eur, usd, _mp, info in buy["missing"]:
-        ch = (info or {}).get("cheapest")
-        effective = eur
-        if ch and _sane_cheaper(ch["eur"], eur):
-            label = ch["printed_as"] if ch["printed_as"].lower() != name.lower() \
-                else info["canonical"]
-            cheaper.append((name, label, ch["set"], ch["eur"], eur, need))
-            effective = ch["eur"]
-        best_total_eur += (effective or 0) * need
-    cheaper_section = ""
-    if cheaper:
-        saved = buy["totals"]["eur"] - best_total_eur
-        cheaper_rows = "\n".join(
-            f"| {name} | {label} ({set_name}) | €{cheap:,.2f} | {_eur_cell(deck_eur)} | €{(deck_eur or 0) - cheap:,.2f} |"
-            for name, label, set_name, cheap, deck_eur, _ in cheaper
-        )
-        best_gbp = _gbp_cell(best_total_eur * rates["eur_gbp"] if rates else None)
-        cheaper_section = f"""### 💡 Cheaper Printings
-
-Same card, different printing or name — Universes Beyond skins are only art
-and printed-name swaps, so the plain version is functionally identical.
-
-| Card in deck | Cheapest version (set) | EUR | Deck version | Save |
-|--------------|------------------------|----:|-------------:|-----:|
-{cheaper_rows}
-
-Buying the cheapest printings instead ≈ **€{best_total_eur:,.2f} · {best_gbp}** — saves **€{saved:,.2f}**.
-
-"""
-    return f"""## 🛒 Cards to Buy
+    cheap_hint = ""
+    if cheap and cheap["totals"]["eur"] < buy["totals"]["eur"] - 0.005:
+        cheap_hint = (f" — or ≈ **€{cheap['totals']['eur']:,.2f}** "
+                      "at the cheapest versions (next section after the "
+                      "💸 Cheapest Build)")
+    unpriced_note = (
+        f"\n\n> ⚠️ {buy['unpriced']} missing card(s) have no price and are not "
+        "in the totals." if buy["unpriced"] else "")
+    rows = [
+        f"| {m['name']} | {_buy_cell(m)} | {_eur_cell(m['eur'])} | "
+        f"{_usd_cell(m['usd'])} | {_usd_cell(m['mp'])} | "
+        f"{_gbp_cell(_card_gbp(m['eur'], m['usd'], rates))} |"
+        for m in buy["missing"]
+    ] + [
+        f"| {name} | {_owned_cell(qty)} | — | — | — | — |"
+        for qty, name in sorted(buy["owned_rows"], key=lambda r: r[1].lower())
+    ]
+    table = "\n".join(rows)
+    listing = "\n".join(
+        f"{m['need']} {m['name']}"
+        for m in sorted(buy["missing"], key=lambda m: m["name"].lower()))
+    return f"""## 🛒 Cards to Complete the Deck
 
 {summary}
-Completing the deck ≈ **€{buy["totals"]["eur"]:,.2f} · ${buy["totals"]["usd"]:,.2f} · MP ${buy["totals"]["mp"]:,.2f} · {buy_gbp}** (prices per copy below).
+Buy the **{len(buy['missing'])}** missing card(s) ≈ **€{buy["totals"]["eur"]:,.2f} · ${buy["totals"]["usd"]:,.2f} · MP ${buy["totals"]["mp"]:,.2f} · {buy_gbp}** at the deck's own versions{cheap_hint}. Prices are per copy; **✅ = pull it from your collection**, its price is off the totals.{unpriced_note}
 
-| Card | Need | EUR | USD | MP $ | ≈ GBP |
-|------|-----:|----:|----:|-----:|------:|
-{buy_rows}
+| Card | Buy | EUR | USD | MP $ | ≈ GBP |
+|------|:----|----:|----:|-----:|------:|
+{table}
 
-{cheaper_section}"""
+### 📋 Buy List (copy-paste)
+
+Just the missing cards, any printing:
+
+```
+{listing}
+```"""
+
+
+def render_cheap_buy_section(buy: dict, cheap: dict,
+                             choices: dict[str, dict],
+                             rates: dict | None) -> str:
+    """'Cards to Complete — Cheapest Build': the same missing cards at their
+    cheapest functionally-identical versions, with per-card savings and a
+    copy-paste Budget Buy List that pins printings with `(SET)` codes.
+    """
+    if not buy["missing"]:
+        return ""
+    saved = buy["totals"]["eur"] - cheap["totals"]["eur"]
+    cheap_gbp = _gbp_cell(cheap["totals"]["best_gbp"] if rates else None)
+    rows = []
+    for m in buy["missing"]:
+        c = choices.get(m["name"].lower())
+        if c and c["changed"]:
+            label = f"{c['printed']} ({c['set_name']})"
+            eur, save = c["eur"], (m["eur"] or 0) - (c["eur"] or 0)
+        else:
+            label, eur, save = m["name"], m["eur"], None
+        mp = c["mp"] if c else m["mp"]
+        rows.append(
+            f"| {label} | {_buy_cell(m)} | {_eur_cell(eur)} | {_usd_cell(mp)} | "
+            f"{_gbp_cell(_card_gbp(eur, None, rates))} | "
+            f"{f'€{save:,.2f}' if save else '—'} |")
+    table = "\n".join(rows)
+    listing = "\n".join(cheap["lines"])
+    return f"""## 🛒 Cards to Complete — Cheapest Build
+
+The same missing cards at their cheapest versions ≈ **€{cheap["totals"]["eur"]:,.2f} · MP ${cheap["totals"]["mp"]:,.2f} · best mix ≈ {cheap_gbp}** — saves **€{saved:,.2f}** over the deck's own versions. Universes Beyond skins are only art and printed-name swaps, so the plain version is functionally identical (and vice versa).
+
+| Card (cheapest version) | Buy | EUR | MP $ | ≈ GBP | Save |
+|-------------------------|:----|----:|-----:|------:|-----:|
+{table}
+
+### 📋 Budget Buy List (copy-paste)
+
+The missing cards at their cheapest versions — `(SET)` pins the exact printing
+(Moxfield understands this format); lines without a code use any printing.
+
+```
+{listing}
+```"""
 
 
 def extract_reviews(text: str) -> dict[str, str]:
@@ -738,19 +876,28 @@ def extract_reviews(text: str) -> dict[str, str]:
 def build_note(deck: dict, decklist: list[tuple[int, str]],
                image_url: str, deck_url: str, report: dict,
                buy: dict | None, collection_name: str | None,
-               reviews: dict[str, str], budget_section: str,
+               reviews: dict[str, str], choices: dict[str, dict],
                deck_id: int) -> str:
+    """The whole note. Reading order after the reviews: card prices &
+    gallery, the deck list, what to buy to complete it, the Cheapest Build,
+    and what to buy to complete that.
+    """
     today = date.today().isoformat()
     commander_line = ", ".join(deck["commanders"])
     listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
+    rates = report["rates"]
 
+    cheap = cheapest_buy(buy, choices, rates) if buy else None
     price_frontmatter = price_frontmatter_str(report)
     # buy and collection_name always arrive together (see import_deck)
     if buy is not None and collection_name is not None:
-        price_frontmatter += "\n" + buy_frontmatter(buy, report["rates"])
-        buy_section = render_buy_section(buy, collection_name, report["rates"])
+        price_frontmatter += "\n" + buy_frontmatter(buy, rates, cheap)
+        buy_section = "\n\n" + render_buy_section(buy, collection_name, rates,
+                                                  cheap)
+        cheap_buy_section = render_cheap_buy_section(buy, cheap, choices, rates)
+        cheap_buy_section = "\n\n" + cheap_buy_section if cheap_buy_section else ""
     else:
-        buy_section = ""
+        buy_section = cheap_buy_section = ""
     review_block = "\n\n".join(
         f"## {heading}\n\n{reviews.get(heading, '-')}" for heading in REVIEW_SECTIONS
     )
@@ -772,22 +919,25 @@ price-date: {today}
 **Format:** {deck["format"]}
 **Source:** {deck["source_md"]}
 
-{render_value_block(report, today)}
+{render_value_block(report, today, buy, cheap)}
 
 ![{commander_line}|290]({image_url})
 
 {review_block}
 
-{buy_section}{render_card_tables(report)}## 📜 Deck List
+{render_card_tables(report)}
+## 📜 Deck List
 
 ```
 {listing}
-```
+```{buy_section}
 
-{budget_section}"""
+{render_budget_list(decklist, report, choices, cheap)}{cheap_buy_section}
+"""
 
 
-def render_value_block(report: dict, today: str) -> str:
+def render_value_block(report: dict, today: str, buy: dict | None = None,
+                       cheap: dict | None = None) -> str:
     totals, coverage = report["totals"], report["coverage"]
     unique, rates = report["unique"], report["rates"]
     # tix trade at roughly $1 each on MTGO, so they convert via the USD rate
@@ -805,10 +955,27 @@ def render_value_block(report: dict, today: str) -> str:
         f"| {label} | {native} | {_gbp_cell(gbp)} | {cov}/{unique} |"
         for label, native, gbp, cov in source_rows
     )
+    finish_line = ""
+    if buy is not None:
+        if buy["missing"]:
+            t = buy["totals"]
+            gbp = _gbp_cell(t["eur"] * rates["eur_gbp"] if rates else None)
+            cheap_bit = ""
+            if cheap and cheap["totals"]["eur"] < t["eur"] - 0.005:
+                cheap_bit = (f" — or ≈ **€{cheap['totals']['eur']:,.2f}** at "
+                             "the cheapest versions")
+            finish_line = (
+                f"\n🛒 **Your cost to finish** (own {buy['owned_unique']}/"
+                f"{buy['unique']}): ≈ **€{t['eur']:,.2f} · ${t['usd']:,.2f} · "
+                f"MP ${t['mp']:,.2f} · {gbp}**{cheap_bit} — see 🛒 Cards to "
+                "Complete below.\n")
+        else:
+            finish_line = ("\n🎉 **You own every card in this deck** — "
+                           "nothing to buy.\n")
     return f"""| Source | Value | ≈ GBP | Cards priced |
 |--------|------:|------:|-------------:|
 {value_rows}
-
+{finish_line}
 *💰 Standard (non-foil) cards. Cardmarket/TCGPlayer/tix: Scryfall daily snapshot ({today}); ManaPool: cheapest live listings (LP+ by default), US marketplace, shipping excluded. ≈ GBP is rough — ECB reference rates via frankfurter.dev; 1 tix ≈ $1.*"""
 
 
@@ -843,36 +1010,26 @@ def render_gallery(cells: list[tuple[str | None, str]],
 
 def render_card_tables(report: dict) -> str:
     rates = report["rates"]
-    top_rows = "\n".join(
-        f"| {name} | {_eur_cell(eur)} | {_usd_cell(usd)} | {_usd_cell(mp)} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
-        for name, eur, usd, mp in report["top"]
-    )
     all_rows = "\n".join(
         f"| {name}{f' ×{qty}' if qty > 1 else ''} | {_eur_cell(eur)} | {_usd_cell(usd)} | {_usd_cell(mp)} | {_gbp_cell(_card_gbp(eur, usd, rates))} |"
         for qty, name, eur, usd, mp, _img in report["all"]
     )
     unpriced_note = (
-        f"\n> ⚠️ No price found for {len(report['unpriced'])} card(s): "
+        f"\n\n> ⚠️ No price found for {len(report['unpriced'])} card(s): "
         + ", ".join(report["unpriced"]) if report["unpriced"] else ""
     )
     gallery_cells = [
         (img, f"{name}{f' ×{qty}' if qty > 1 else ''}")
         for qty, name, _eur, _usd, _mp, img in report["all"]
     ]
-    return f"""## 🏆 Priciest Cards
+    prices_body = f"""Every card, dearest first (×N marks multiples — basics etc.; the price shown is per copy).
 
 | Card | EUR | USD | MP $ | ≈ GBP |
 |------|----:|----:|-----:|------:|
-{top_rows}
+{all_rows}"""
+    return f"""## 💰 Card Prices
 
-### 💵 All Card Prices
-
-Per-card prices (×N marks multiples — basics etc.; the price shown is per copy).
-
-| Card | EUR | USD | MP $ | ≈ GBP |
-|------|----:|----:|-----:|------:|
-{all_rows}
-{unpriced_note}
+{_callout(f"💵 All Card Prices ({report['unique']})", prices_body)}{unpriced_note}
 
 {render_card_gallery(gallery_cells)}
 """
@@ -912,12 +1069,12 @@ def set_code_map() -> dict[str, str]:
         return {}
 
 
-def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
-                       report: dict) -> str:
+def render_budget_list(decklist: list[tuple[int, str]], report: dict,
+                       choices: dict[str, dict],
+                       cheap: dict | None) -> str:
     """Full deck list where every card is shown at its cheapest
     functionally-identical version (any printing/name, incl. ManaPool's
-    cheapest live listing). Bulk under €0.50 keeps the deck's own version —
-    there's nothing meaningful to save on pennies.
+    cheapest live listing), with the detail tables collapsed into callouts.
     """
     rates = report["rates"]
     rows = []
@@ -925,24 +1082,9 @@ def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
     gallery_cells = []
     totals = {"eur": 0.0, "mp": 0.0, "best_gbp": 0.0}
     for qty, name in decklist:
-        p = prices.get(name.lower()) or {}
-        deck_eur, mp = p.get("eur"), p.get("mp")
-        label, eur = f"{name}", deck_eur
-        img = p.get("img")
-        list_line = f"{qty} {name}"
-        worth_checking = (deck_eur or p.get("usd") or 0) > 0.50
-        if worth_checking:
-            info = card_prints_info(name)
-            ch = info.get("cheapest")
-            if ch and _sane_cheaper(ch["eur"], deck_eur):
-                eur = ch["eur"]
-                img = ch.get("img") or img
-                printed = ch["printed_as"] if ch["printed_as"].lower() != name.lower() \
-                    else name
-                label = f"{printed} ({ch['set']})"
-                code = set_code_map().get(ch["set"].lower())
-                list_line = f"{qty} {printed} ({code.upper()})" if code \
-                    else f"{qty} {printed}"
+        c = choices.get(name.lower()) or {}
+        eur, mp, img = c.get("eur"), c.get("mp"), c.get("img")
+        label = f"{c['printed']} ({c['set_name']})" if c.get("changed") else name
         gbp_candidates = []
         if rates:
             if eur is not None:
@@ -957,11 +1099,29 @@ def render_budget_list(decklist: list[tuple[int, str]], prices: dict[str, dict],
             f"| {label}{f' ×{qty}' if qty > 1 else ''} | "
             f"{_eur_cell(eur)} | {_usd_cell(mp)} | {_gbp_cell(best_gbp)} |"
         )
-        list_lines.append(list_line)
+        list_lines.append(_choice_line(qty, c or None, name))
         gallery_cells.append((img, f"{label}{f' ×{qty}' if qty > 1 else ''}"))
     body = "\n".join(rows)
     listing = "\n".join(list_lines)
-    gallery = render_gallery(gallery_cells)
+    prices_body = f"""| Card (cheapest version) | EUR | MP $ | ≈ GBP |
+|-------------------------|----:|-----:|------:|
+{body}"""
+    listing_body = f"""`(SET)` pins the exact printing (Moxfield understands
+this format); lines without a code use any printing.
+
+```
+{listing}
+```"""
+    gallery_body = f"""Each card at the cheapest version chosen above.
+
+{render_gallery(gallery_cells)}"""
+    missing_line = ""
+    if cheap and cheap["lines"]:
+        missing_line = (
+            f"\n🛒 Missing cards only ≈ **€{cheap['totals']['eur']:,.2f} · "
+            f"MP ${cheap['totals']['mp']:,.2f} · "
+            f"{_gbp_cell(cheap['totals']['best_gbp'] if rates else None)}** — "
+            "see 🛒 Cards to Complete — Cheapest Build below.\n")
     return f"""## 💸 Cheapest Build
 
 The whole deck with every card at its cheapest functionally-identical version
@@ -969,27 +1129,13 @@ The whole deck with every card at its cheapest functionally-identical version
 cheapest Cardmarket printing, MP $ the cheapest ManaPool listing, ≈ GBP the
 cheaper of the two converted. Cards under €0.50 keep the deck's own version.
 
-| Card (cheapest version) | EUR | MP $ | ≈ GBP |
-|-------------------------|----:|-----:|------:|
-{body}
-
 Whole deck at cheapest versions ≈ **€{totals["eur"]:,.2f} · MP ${totals["mp"]:,.2f} · best mix ≈ {_gbp_cell(totals["best_gbp"] if rates else None)}**.
+{missing_line}
+{_callout("💸 Cheapest-version prices (per card)", prices_body)}
 
-### 📋 Cheapest Build List
+{_callout("📋 Cheapest Build List (copy-paste)", listing_body)}
 
-Copy-paste list of the cheapest versions — `(SET)` pins the exact printing
-(Moxfield understands this format); lines without a code use any printing.
-
-```
-{listing}
-```
-
-### 🖼️ Cheapest Version Gallery
-
-Each card at the cheapest version chosen above.
-
-{gallery}
-"""
+{_callout("🖼️ Cheapest Version Gallery", gallery_body)}"""
 
 
 def price_frontmatter_str(report: dict) -> str:
@@ -1075,7 +1221,8 @@ def list_decks(out_dir: Path) -> None:
 def recheck_all(out_dir: Path) -> None:
     """Refresh every deck note by re-importing it from its original source —
     a Moxfield/EDHREC URL or the archived .txt in ./imports — so deck edits,
-    fresh prices and fresh art (commander + galleries) all land. If a source
+    fresh prices and fresh galleries all land (commander art is reused from
+    the note unless the commander changed). If a source
     can't be reached (dead link, file gone, offline), that deck falls back to
     a price/buy refresh from the list stored in the note. Review sections are
     preserved throughout.
@@ -1084,7 +1231,6 @@ def recheck_all(out_dir: Path) -> None:
     if not collection:
         sys.exit(f"No collection file found at {collection_path(out_dir)}")
     collection_name, owned = collection
-    today = date.today().isoformat()
     ids = deck_id_map(out_dir)  # backfill ids so every note is addressable
     if not ids:
         sys.exit(f"No deck notes found in {out_dir}")
@@ -1099,58 +1245,49 @@ def recheck_all(out_dir: Path) -> None:
             except (SystemExit, Exception) as exc:  # source unreachable → fall back
                 print(f"[{did}] {note.name}: source refresh failed ({exc}) — "
                       "refreshing prices from the stored list")
-        _recheck_from_stored(did, note, collection_name, owned, today)
+        _recheck_from_stored(did, note, collection_name, owned)
 
 
 def _recheck_from_stored(did: int, note: Path, collection_name: str,
-                         owned: dict[str, int], today: str) -> None:
-    """Refresh a note's prices, galleries, Cards to Buy and Cheapest Build from
-    the deck list already stored in it — no site fetching, no art re-download.
-    The --recheck fallback when the original source can't be reached.
+                         owned: dict[str, int]) -> None:
+    """Refresh a note's prices, buy sections and Cheapest Build from the deck
+    list already stored in it — no site fetching, no art re-download. The
+    --recheck fallback when the original source can't be reached. The note is
+    rebuilt wholesale from its stored fields (header, deck list, reviews,
+    commander image URL), which also migrates older notes to the current
+    layout instead of patching sections in place.
     """
     text = note.read_text(encoding="utf-8")
-    block = re.search(r"## 📜 Deck List\s*```\n(.*?)```", text, re.S)
-    if not block:
+    decklist = _note_decklist(text)
+    if not decklist:
         print(f"[{did}] {note.name}: no deck list found — skipped")
         return
-    decklist = [p for p in map(parse_card_line, block.group(1).splitlines()) if p]
+
+    def field(pattern: str, fallback: str = "") -> str:
+        m = re.search(pattern, text, re.M)
+        return m.group(1).strip() if m else fallback
+
+    deck = {
+        "name": field(r"^deck-name: (.+)$") or field(r"^# 🃏 (.+)$", note.stem),
+        "format": field(r"^\*\*Format:\*\* (.+)$", "Commander"),
+        "source_md": field(r"^\*\*Source:\*\* (.+)$"),
+        # The frontmatter line already holds all commanders joined with ", "
+        "commanders": [field(r"^commander: (.+)$", decklist[0][1])],
+    }
+    deck_url = field(r"^deck-url: (.+)$")
+    image_url = field(r"!\[[^\]]*\|290\]\(([^)]*)\)")
+    created = field(r"^created: (.+)$")
+
     prices = fetch_prices([n for _, n in decklist])
     report = price_report(decklist, prices)
     buy = buy_report(decklist, owned, prices)
-    rates = report["rates"]
-
-    # Deck value table + caption (tolerate Obsidian's table re-padding)
-    text = re.sub(r"\| Source\s*\|\s*Value\s*\|.*?\*💰[^\n]*\*",
-                  lambda _: render_value_block(report, today), text,
-                  count=1, flags=re.S)
-    # Priciest / All Card Prices tables
-    text = re.sub(r"## 🏆 Priciest Cards\n.*?(?=## 📜 Deck List)",
-                  lambda _: render_card_tables(report), text,
-                  count=1, flags=re.S)
-    # Cards to Buy
-    buy_sec = render_buy_section(buy, collection_name, rates)
-    if "## 🛒 Cards to Buy" in text:
-        text = re.sub(r"## 🛒 Cards to Buy\n.*?(?=## 🏆 Priciest Cards)",
-                      lambda _: buy_sec, text, count=1, flags=re.S)
-    else:
-        text = text.replace("## 🏆 Priciest Cards",
-                            buy_sec + "## 🏆 Priciest Cards", 1)
-    # Frontmatter: rebuild all price/owned/buy fields, stamp price-date
-    text = re.sub(r"^(price-(eur|gbp|usd|tix|mp)|owned|buy-eur|buy-gbp|buy-mp): .*\n",
-                  "", text, flags=re.M)
-    fm = price_frontmatter_str(report) + "\n" + buy_frontmatter(buy, rates)
-    text = text.replace("\nprice-date:", f"\n{fm}\nprice-date:", 1)
-    text = re.sub(r"^price-date: .*$", f"price-date: {today}", text,
-                  count=1, flags=re.M)
-    # Cheapest Build (sits at the very bottom — replace or append)
-    budget_section = render_budget_list(decklist, prices, report)
-    if "## 💸 Cheapest Build" in text:
-        text = re.sub(r"## 💸 Cheapest Build\n.*\Z",
-                      lambda _: budget_section, text, count=1, flags=re.S)
-    else:
-        text = text.rstrip("\n") + "\n\n" + budget_section
-
-    note.write_text(text, encoding="utf-8")
+    choices = budget_choices(decklist, prices)
+    new_text = build_note(deck, decklist, image_url, deck_url, report, buy,
+                          collection_name, extract_reviews(text), choices, did)
+    if created:  # keep the original import date, not the refresh date
+        new_text = re.sub(r"^created: .*$", f"created: {created}", new_text,
+                          count=1, flags=re.M)
+    note.write_text(new_text, encoding="utf-8")
     print(f"[{did}] {note.name}: value ~EUR {report['totals']['eur']:,.2f}"
           f" — own {buy['owned_unique']}/{buy['unique']}"
           f" — to buy {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f})")
@@ -1230,7 +1367,21 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
     attachments_dir = out_dir / "Attachments"
     attachments_dir.mkdir(exist_ok=True)
     image_path = attachments_dir / f"{stem}.jpg"
-    image_url = fetch_commander_art(primary, image_path)
+    # Re-imports reuse the existing commander art (hosted URL from the note,
+    # jpg already on disk) as long as the commander hasn't changed — the image
+    # is static, so --recheck shouldn't re-download it. --reimport is the
+    # explicit "refresh my art" switch and always re-fetches.
+    image_url = None
+    if match and image_path.is_file():
+        old_text = match.read_text(encoding="utf-8")
+        same_commander = re.search(
+            rf"^commander: {re.escape(', '.join(deck['commanders']))}\s*$",
+            old_text, re.M)
+        img_m = re.search(r"!\[[^\]]*\|290\]\((https?://[^)]+)\)", old_text)
+        if same_commander and img_m:
+            image_url = img_m.group(1)
+    if image_url is None:
+        image_url = fetch_commander_art(primary, image_path)
 
     if own:
         if add_deck_to_collection(out_dir, deck["name"], decklist):
@@ -1252,10 +1403,10 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
     if reviews:
         print(f"Preserved: your written content in {len(reviews)} review section(s)")
 
-    budget_section = render_budget_list(decklist, prices, report)
+    choices = budget_choices(decklist, prices)
     note_path.write_text(
         build_note(deck, decklist, image_url, deck_url, report, buy,
-                   collection_name, reviews, budget_section, deck_id),
+                   collection_name, reviews, choices, deck_id),
         encoding="utf-8",
     )
 
@@ -1278,10 +1429,12 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
           f" / TIX {totals['tix']:,.2f}"
           + (f"  ({len(report['unpriced'])} unpriced)" if report["unpriced"] else ""))
     if buy is not None:
+        cheap = cheapest_buy(buy, choices, rates)
         print(f"Owned:     {buy['owned_unique']}/{buy['unique']} cards"
-              f" — to buy: {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f})")
+              f" — to buy: {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f}"
+              f" / ~EUR {cheap['totals']['eur']:,.2f} at cheapest versions)")
     else:
-        print("Owned:     no _Collection.md found — skipped the Cards to Buy section")
+        print("Owned:     no _Collection.md found — skipped the Cards to Complete sections")
     print(f"Note:      {note_path}")
     print(f"Artwork:   {image_path}")
 
@@ -1430,6 +1583,11 @@ def _parse_id(val: str) -> int:
     try:
         return int(val)
     except ValueError:
+        if "://" in val or val.lower().endswith(".txt"):
+            sys.exit(f"--recheck/--reimport take a deck id, not a source.\n"
+                     f"To re-import that deck from its source run:\n"
+                     f"  python mtg_deck_importer.py --force \"{val}\"\n"
+                     "or find its id with --list and use --recheck <id>.")
         sys.exit(f"Deck id must be a number, got {val!r} — run --list to see ids.")
 
 
