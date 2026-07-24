@@ -359,9 +359,17 @@ def manapool_index() -> dict[str, float]:
     return index
 
 
+def _env_path(value: str) -> Path:
+    """A path from .env: expand ~, and forgive shell-style '\\ ' escapes —
+    .env values are taken literally, but a path pasted from a terminal often
+    carries them (a real Windows path never contains backslash-space).
+    """
+    return Path(value.replace("\\ ", " ")).expanduser()
+
+
 def collection_path(out_dir: Path) -> Path:
-    return Path(os.environ.get("COLLECTION_FILE")
-                or out_dir / "_Collection.md").expanduser()
+    custom = os.environ.get("COLLECTION_FILE")
+    return _env_path(custom) if custom else out_dir / "_Collection.md"
 
 
 def add_deck_to_collection(out_dir: Path, deck_name: str,
@@ -390,9 +398,7 @@ def output_dir() -> Path:
             "VAULT_OUTPUT_DIR is not set.\n"
             "Copy .env.example to .env and point it at your vault's deck folder."
         )
-    # ~ is expanded; write the path plainly in .env (no shell \-escapes —
-    # a .env file is not a shell script, spaces are fine as-is)
-    return Path(value).expanduser()
+    return _env_path(value)
 
 
 # ---------------------------------------------------------------------------
