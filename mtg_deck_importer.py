@@ -392,6 +392,96 @@ def add_deck_to_collection(out_dir: Path, deck_name: str,
     return True
 
 
+BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
+
+
+def collection_value(out_dir: Path) -> None:
+    """Price the whole collection (--collection-value): totals per market and
+    a top-20 table, printed to the console and written into _Collection.md as
+    a '💰 Collection Value' section (replaced in place on re-runs). Basic
+    lands are excluded — the 999-copy sentinel entries would be nonsense.
+    """
+    collection = load_collection(out_dir)
+    if not collection:
+        sys.exit(f"No collection file found at {collection_path(out_dir)}")
+    fname, owned = collection
+    names = [n for n in owned
+             if n not in BASIC_LAND_NAMES and not n.startswith("snow-covered ")]
+    if not names:
+        sys.exit("The collection has no non-basic cards to price.")
+    print(f"Pricing:   {len(names)} unique cards from {fname}...")
+    prices = fetch_prices(names)
+    rates = fx_rates()
+
+    totals = {"eur": 0.0, "usd": 0.0, "mp": 0.0}
+    rows = []
+    unpriced = []
+    copies = 0
+    for n in names:
+        qty = owned[n]
+        p = prices.get(n) or {}
+        disp = p.get("name", n.title())
+        if p.get("eur") is None and p.get("usd") is None:
+            unpriced.append(disp)
+            continue
+        copies += qty
+        for src in ("eur", "usd", "mp"):
+            if p.get(src) is not None:
+                totals[src] += p[src] * qty
+        rows.append((qty, disp, p.get("eur"), p.get("mp")))
+    rows.sort(key=lambda r: (r[2] or 0) * r[0], reverse=True)
+
+    today = date.today().isoformat()
+    market_rows = "\n".join(
+        f"| {label} | {native} | {_gbp_cell(gbp)} |"
+        for label, native, gbp in [
+            ("🇪🇺 Cardmarket", f"€{totals['eur']:,.2f}",
+             totals["eur"] * rates["eur_gbp"] if rates else None),
+            ("🇺🇸 TCGPlayer", f"${totals['usd']:,.2f}",
+             totals["usd"] * rates["usd_gbp"] if rates else None),
+            ("🛍️ ManaPool", f"${totals['mp']:,.2f}",
+             totals["mp"] * rates["usd_gbp"] if rates else None),
+        ])
+    top_rows = "\n".join(
+        f"| {disp}{f' ×{qty}' if qty > 1 else ''} | {_eur_cell(eur)} | "
+        f"{_eur_cell((eur or 0) * qty)} | {_usd_cell(mp)} |"
+        for qty, disp, eur, mp in rows[:20])
+    top_body = f"""| Card | Each | Value | MP $ each |
+|------|-----:|------:|----------:|
+{top_rows}"""
+    unpriced_note = (f"\n> ⚠️ No price found for {len(unpriced)} card(s): "
+                     + ", ".join(unpriced[:15])
+                     + ("…" if len(unpriced) > 15 else "")
+                     if unpriced else "")
+    section = f"""## 💰 Collection Value
+
+*Priced {today} — {len(rows)}/{len(names)} unique non-basic cards priced ({copies} copies); basic lands excluded. ManaPool is live cheapest listings, others are market averages.*
+
+| Market | Value | ≈ GBP |
+|--------|------:|------:|
+{market_rows}
+
+{_callout("🏆 Top 20 most valuable", top_body)}{unpriced_note}
+"""
+    path = collection_path(out_dir)
+    text = path.read_text(encoding="utf-8-sig")
+    if "## 💰 Collection Value" in text:
+        text = re.sub(r"## 💰 Collection Value\n.*?(?=\n## |\Z)",
+                      lambda _: section, text, count=1, flags=re.S)
+    else:
+        text = text.rstrip("\n") + "\n\n" + section
+    path.write_text(text, encoding="utf-8")
+
+    gbp = f" / GBP {totals['eur'] * rates['eur_gbp']:,.2f}" if rates else ""
+    print(f"Value:     ~EUR {totals['eur']:,.2f}{gbp}"
+          f" / USD {totals['usd']:,.2f} / MP USD {totals['mp']:,.2f}")
+    if rows:
+        q, d, e, _ = rows[0]
+        print(f"Top card:  {d}{f' ×{q}' if q > 1 else ''}"
+              f" (~EUR {(e or 0) * q:,.2f})")
+    print(f"Updated:   💰 Collection Value section in {path.name}")
+
+
 def output_dir() -> Path:
     # .env sits next to the script; a real environment variable wins over it
     load_dotenv(SCRIPT_DIR / ".env")
@@ -773,6 +863,108 @@ def cheapest_buy(buy: dict, choices: dict[str, dict],
     return {"totals": totals, "lines": lines}
 
 
+HISTORY_FILE = ".price-history.json"  # lives in the vault → syncs everywhere
+
+
+def _load_history(out_dir: Path) -> dict:
+    try:
+        return json.loads((out_dir / HISTORY_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def record_history(out_dir: Path, deck_id: int, deck_name: str, report: dict,
+                   buy: dict | None, cheap: dict | None,
+                   choices: dict[str, dict]) -> tuple[list[dict], list[str]]:
+    """Append today's price snapshot for a deck to the vault's history file
+    (one entry per day — a same-day re-run overwrites) and compare against
+    the previous check: returns (all entries, alert lines). Alerts flag a
+    notable drop in the cost to finish and per-card crashes that usually
+    mean a reprint — the 'time to buy' signals.
+    """
+    hist = _load_history(out_dir)
+    key = str(deck_id)
+    prior = hist.get(key, {})
+    old_entries = prior.get("entries", [])
+    watch_prev = prior.get("watch", {})
+    today = date.today().isoformat()
+
+    entry = {"date": today, "value_eur": round(report["totals"]["eur"], 2)}
+    if buy is not None:
+        entry["buy_eur"] = round(buy["totals"]["eur"], 2)
+    if cheap is not None:
+        entry["cheapest_eur"] = round(cheap["totals"]["eur"], 2)
+    prev = next((e for e in reversed(old_entries) if e["date"] != today), None)
+    entries = [e for e in old_entries if e["date"] != today] + [entry]
+
+    # Watch the pricey missing cards so a reprint-driven crash is noticed
+    watch: dict[str, dict] = {}
+    if buy is not None:
+        for m in buy["missing"]:
+            c = choices.get(m["name"].lower()) or {}
+            eur = c.get("eur") or m["eur"]
+            if eur and eur >= 3:
+                watch[m["name"]] = {"eur": round(eur, 2),
+                                    "set": c.get("set_name")}
+        watch = dict(sorted(watch.items(),
+                            key=lambda kv: -kv[1]["eur"])[:15])
+
+    alerts = []
+    if prev and prev.get("cheapest_eur") and entry.get("cheapest_eur") is not None:
+        old, new = prev["cheapest_eur"], entry["cheapest_eur"]
+        diff = new - old
+        if abs(diff) >= 0.01:
+            alerts.append(f"History:   cost to finish (cheapest) €{old:,.2f} → "
+                          f"€{new:,.2f} ({diff:+,.2f}) since {prev['date']}")
+        if diff <= -5 and new <= old * 0.95:
+            alerts.append(f"📉 Notable drop — this deck is €{-diff:,.2f} cheaper "
+                          "to finish than last check!")
+    for name, w in watch_prev.items():
+        now = watch.get(name)
+        if now and now["eur"] <= w["eur"] * 0.75 and w["eur"] - now["eur"] >= 3:
+            setmsg = (f" — now cheapest in {now['set']}"
+                      if now.get("set") and now["set"] != w.get("set") else "")
+            alerts.append(f"💥 {name}: cheapest €{w['eur']:,.2f} → "
+                          f"€{now['eur']:,.2f}{setmsg} (reprint or price crash?)")
+
+    hist[key] = {"name": deck_name, "entries": entries[-60:], "watch": watch}
+    try:
+        (out_dir / HISTORY_FILE).write_text(json.dumps(hist), encoding="utf-8")
+    except OSError:
+        pass
+    return entries, alerts
+
+
+def render_history(entries: list[dict]) -> str:
+    """A collapsed '📉 Price History' callout: one row per price check, with
+    the overall cost-to-finish trend in the title.
+    """
+    if not entries:
+        return ""
+
+    def cell(e, k):
+        return f"€{e[k]:,.2f}" if e.get(k) is not None else "—"
+
+    rows = "\n".join(
+        f"| {e['date']} | {cell(e, 'value_eur')} | {cell(e, 'buy_eur')} | "
+        f"{cell(e, 'cheapest_eur')} |" for e in entries[-8:])
+    trend = ""
+    first, last = entries[0], entries[-1]
+    if len(entries) >= 2 and first.get("cheapest_eur") and \
+            last.get("cheapest_eur") is not None:
+        pct = (last["cheapest_eur"] - first["cheapest_eur"]) \
+            / first["cheapest_eur"] * 100
+        trend = f" — cheapest finish {pct:+.0f}% since {first['date']}"
+    n = len(entries)
+    body = f"""Deck value and cost to finish at each price check (last 8 shown, newest last).
+
+| Date | Deck € | Finish € | Cheapest € |
+|------|-------:|---------:|-----------:|
+{rows}"""
+    return _callout(f"📉 Price History ({n} check{'s' if n != 1 else ''}{trend})",
+                    body)
+
+
 def buy_frontmatter(buy: dict, rates: dict | None, cheap: dict | None) -> str:
     lines = [f"owned: {buy['owned_unique']}/{buy['unique']}",
              f"buy-eur: {buy['totals']['eur']:.2f}",
@@ -913,7 +1105,7 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
                image_url: str, deck_url: str, report: dict,
                buy: dict | None, collection_name: str | None,
                reviews: dict[str, str], choices: dict[str, dict],
-               deck_id: int) -> str:
+               deck_id: int, history: list[dict] | None = None) -> str:
     """The whole note. Reading order after the reviews: card prices &
     gallery, the deck list, what to buy to complete it, the Cheapest Build,
     and what to buy to complete that.
@@ -937,6 +1129,7 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
     review_block = "\n\n".join(
         f"## {heading}\n\n{reviews.get(heading, '-')}" for heading in REVIEW_SECTIONS
     )
+    history_block = f"\n{render_history(history)}\n" if history else ""
 
     return f"""---
 tags: [mtg, deck, commander]
@@ -956,7 +1149,7 @@ price-date: {today}
 **Source:** {deck["source_md"]}
 
 {render_value_block(report, today, buy, cheap)}
-
+{history_block}
 ![{commander_line}|290]({image_url})
 
 {review_block}
@@ -1320,8 +1513,12 @@ def _recheck_from_stored(did: int, note: Path, collection_name: str,
     report = price_report(decklist, prices)
     buy = buy_report(decklist, owned, prices)
     choices = budget_choices(decklist, prices)
+    cheap = cheapest_buy(buy, choices, report["rates"])
+    history, alerts = record_history(note.parent, did, deck["name"], report,
+                                     buy, cheap, choices)
     new_text = build_note(deck, decklist, image_url, deck_url, report, buy,
-                          collection_name, extract_reviews(text), choices, did)
+                          collection_name, extract_reviews(text), choices, did,
+                          history)
     if created:  # keep the original import date, not the refresh date
         new_text = re.sub(r"^created: .*$", f"created: {created}", new_text,
                           count=1, flags=re.M)
@@ -1329,6 +1526,8 @@ def _recheck_from_stored(did: int, note: Path, collection_name: str,
     print(f"[{did}] {note.name}: value ~EUR {report['totals']['eur']:,.2f}"
           f" — own {buy['owned_unique']}/{buy['unique']}"
           f" — to buy {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f})")
+    for line in alerts:
+        print(f"[{did}] {line}")
 
 
 def resolve_out_dir() -> Path:
@@ -1450,9 +1649,12 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
         print(f"Preserved: your written content in {len(reviews)} review section(s)")
 
     choices = budget_choices(decklist, prices)
+    cheap = cheapest_buy(buy, choices, report["rates"]) if buy else None
+    history, alerts = record_history(out_dir, deck_id, deck["name"], report,
+                                     buy, cheap, choices)
     note_path.write_text(
         build_note(deck, decklist, image_url, deck_url, report, buy,
-                   collection_name, reviews, choices, deck_id),
+                   collection_name, reviews, choices, deck_id, history),
         encoding="utf-8",
     )
 
@@ -1474,13 +1676,14 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
     print(f"Value:     ~EUR {totals['eur']:,.2f}{gbp} / USD {totals['usd']:,.2f}"
           f" / TIX {totals['tix']:,.2f}"
           + (f"  ({len(report['unpriced'])} unpriced)" if report["unpriced"] else ""))
-    if buy is not None:
-        cheap = cheapest_buy(buy, choices, rates)
+    if buy is not None and cheap is not None:
         print(f"Owned:     {buy['owned_unique']}/{buy['unique']} cards"
               f" — to buy: {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f}"
               f" / ~EUR {cheap['totals']['eur']:,.2f} at cheapest versions)")
     else:
         print("Owned:     no _Collection.md found — skipped the Cards to Complete sections")
+    for line in alerts:
+        print(line)
     print(f"Note:      {note_path}")
     print(f"Artwork:   {image_path}")
 
@@ -1622,6 +1825,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--list", action="store_true", dest="list_ids",
         help="list every deck's id and name, then exit")
+    parser.add_argument(
+        "--collection-value", action="store_true", dest="collection_value",
+        help="price your _Collection.md (basics excluded) and write a "
+             "💰 Collection Value section into it")
     return parser
 
 
@@ -1643,6 +1850,11 @@ def main() -> None:
 
     if args.list_ids:
         list_decks(resolve_out_dir())
+        return
+    if args.collection_value:
+        if args.source:
+            parser.error("--collection-value takes no other arguments.")
+        collection_value(resolve_out_dir())
         return
     if args.recheck is not None:
         if args.source:

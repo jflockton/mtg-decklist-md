@@ -58,6 +58,7 @@ python mtg_deck_importer.py [--force] [--own] <source>
 python mtg_deck_importer.py --recheck [id]
 python mtg_deck_importer.py --reimport [id]
 python mtg_deck_importer.py --list
+python mtg_deck_importer.py --collection-value
 python mtg_deck_importer.py --help
 ```
 
@@ -74,6 +75,7 @@ decklist.
 | `--reimport` | *(no id)* Refresh **every** note's deck list and card art from source **without** re-pricing. Rebuilds the 🖼️ card gallery and commander art; leaves price / buy / Cheapest Build sections untouched. Falls back to the note's stored list if a source fetch fails. |
 | `--reimport <id>` | Same as above, for a single deck by id. |
 | `--list` | Print every deck's id and name, then exit. Use it to find the id for `--recheck <id>` / `--reimport <id>`. |
+| `--collection-value` | Price everything in `_Collection.md` (basic lands excluded) and write a **💰 Collection Value** section into it — totals per market plus a top-20 table, replaced in place on re-runs. |
 | `--help` | Show the built-in help and exit. |
 
 Deck ids come from the `deck-id:` field in each note's frontmatter — run
@@ -206,6 +208,12 @@ Two files in your configured vault folder:
   - 💰 **Deck Value** — deck totals per source with a ≈ GBP column (also in
     the frontmatter for Dataview) and a **🛒 cost-to-finish line** showing
     what completing the deck costs you against your collection
+  - 📉 **Price History** — every priced refresh appends a dated snapshot
+    (deck value, cost to finish, cheapest finish) to `.price-history.json`
+    in the vault, rendered as a collapsed table with the overall trend in
+    the note. The console flags **notable drops** in a deck's finish cost
+    and per-card **price crashes** (usually a reprint) on watched expensive
+    cards — the "time to buy" signals for wishlist decks.
   - 💰 **Card Prices** — the full per-card price table sorted dearest-first
     (native EUR / USD plus ≈ GBP), folded into a collapsible callout so it
     never buries the sections below it
