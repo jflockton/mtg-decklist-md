@@ -166,7 +166,7 @@ the Deck Value table:
 - **🛒 Cards to Complete — Cheapest Build** (right after the 💸 Cheapest
   Build): the same missing cards at their cheapest functionally-identical
   versions, with a per-card **Save** column, plus a **📋 Budget Buy List**
-  code block with `(SET)` codes pinning the exact cheapest printings.
+  code block with `(SET) 123` pins for the exact cheapest printings.
 
 The owned count and both buy totals also land in the frontmatter (`owned`,
 `buy-eur`, `buy-gbp`, `buy-cheapest-eur`, `buy-cheapest-gbp`) for Dataview.
@@ -222,7 +222,8 @@ Two files in your configured vault folder:
     cheapest functionally-identical version (other printings, UB/plain-name
     swaps, ManaPool's cheapest listing) with a best-mix total; the per-card
     table, a **copy-paste deck list** of those cheapest versions with
-    `(SET)` codes pinning the exact printings (Moxfield's import format),
+    `(SET) 123` pins for the exact printings (MTG Arena syntax — Moxfield
+    and most store decklist finders understand it),
     and its own 🖼️ gallery all sit in collapsible callouts. Cards under
     €0.50 keep the deck's own version. Printing lookups are cached for 3
     days in `.cache/`, so only the first run after a quiet spell is slow.

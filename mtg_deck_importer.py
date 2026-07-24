@@ -227,6 +227,7 @@ def card_prints_info(name: str, canonical: str | None = None) -> dict:
                         usd if usd is not None else float("inf"))
                 if best is None or rank < best[0]:
                     best = (rank, {"eur": eur, "usd": usd, "set": c["set_name"],
+                                   "num": c["collector_number"],
                                    "printed_as": c.get("flavor_name") or c["name"],
                                    "img": scryfall_card_image(c)})
             if best:
@@ -727,6 +728,7 @@ def budget_choices(decklist: list[tuple[int, str]],
                     if ch["printed_as"].lower() != name.lower() else name
                 c.update(printed=printed, set_name=ch["set"],
                          set_code=set_code_map().get(ch["set"].lower()),
+                         num=ch.get("num"),
                          eur=ch["eur"], img=ch.get("img") or c["img"],
                          changed=True)
         choices[name.lower()] = c
@@ -734,14 +736,17 @@ def budget_choices(decklist: list[tuple[int, str]],
 
 
 def _choice_line(qty: int, choice: dict | None, name: str) -> str:
-    """A copy-paste decklist line for a chosen version — `(SET)` pins the
-    exact printing (Moxfield's import format) when a code is known.
+    """A copy-paste decklist line for a chosen version — `(SET) 123` pins the
+    exact printing in MTG Arena syntax, which Moxfield and most store
+    decklist finders understand. Without a collector number, bare `(SET)`
+    confuses store parsers, so the code is only added when both are known.
     """
     if not choice:
         return f"{qty} {name}"
-    code = choice.get("set_code")
-    return f"{qty} {choice['printed']} ({code.upper()})" if code \
-        else f"{qty} {choice['printed']}"
+    code, num = choice.get("set_code"), choice.get("num")
+    if code and num:
+        return f"{qty} {choice['printed']} ({code.upper()}) {num}"
+    return f"{qty} {choice['printed']}"
 
 
 def cheapest_buy(buy: dict, choices: dict[str, dict],
@@ -881,8 +886,9 @@ The same missing cards at their cheapest versions ≈ **€{cheap["totals"]["eur
 
 ### 📋 Budget Buy List (copy-paste)
 
-The missing cards at their cheapest versions — `(SET)` pins the exact printing
-(Moxfield understands this format); lines without a code use any printing.
+The missing cards at their cheapest versions — `(SET) 123` pins the exact
+printing (MTG Arena syntax — Moxfield and most store decklist finders
+understand it); lines without a code use any printing.
 
 ```
 {listing}
@@ -1136,8 +1142,9 @@ def render_budget_list(decklist: list[tuple[int, str]], report: dict,
     prices_body = f"""| Card (cheapest version) | EUR | MP $ | ≈ GBP |
 |-------------------------|----:|-----:|------:|
 {body}"""
-    listing_body = f"""`(SET)` pins the exact printing (Moxfield understands
-this format); lines without a code use any printing.
+    listing_body = f"""`(SET) 123` pins the exact printing (MTG Arena syntax —
+Moxfield and most store decklist finders understand it); lines without a
+code use any printing.
 
 ```
 {listing}
