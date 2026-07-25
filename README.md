@@ -59,6 +59,7 @@ python mtg_deck_importer.py --recheck [id]
 python mtg_deck_importer.py --reimport [id]
 python mtg_deck_importer.py --list
 python mtg_deck_importer.py --collection-value
+python mtg_deck_importer.py --brief [id]
 python mtg_deck_importer.py --help
 ```
 
@@ -76,6 +77,7 @@ decklist.
 | `--reimport <id>` | Same as above, for a single deck by id. |
 | `--list` | Print every deck's id and name, then exit. Use it to find the id for `--recheck <id>` / `--reimport <id>`. |
 | `--collection-value` | Price everything in `_Collection.md` (basic lands excluded) and write a **💰 Collection Value** section into it — totals per market plus a top-20 table, replaced in place on re-runs. |
+| `--brief [id]` | Write a compact **analysis brief** per deck (all, or one by id) into the vault's `_analysis-briefs/` — deck shape, role groups, and oracle text for recent cards only. Input for the `/analyse-deck` Claude skill (see below). |
 | `--help` | Show the built-in help and exit. |
 
 Deck ids come from the `deck-id:` field in each note's frontmatter — run
@@ -208,6 +210,15 @@ Two files in your configured vault folder:
   - 💰 **Deck Value** — deck totals per source with a ≈ GBP column (also in
     the frontmatter for Dataview) and a **🛒 cost-to-finish line** showing
     what completing the deck costs you against your collection
+  - 📊 **Deck Shape** — locally computed stats: type counts, mana curve,
+    keyword role buckets (blink / draw / removal / …) and a bracket
+    checklist (Game Changers snapshot, extra turns, mass land denial).
+    Below it sit three **preserved analysis headings** — 🎮 Play Pattern,
+    🏆 Win Conditions, ⚠️ Interactions & Warnings — empty by default and
+    kept through every rebuild, like the review sections. Fill them
+    yourself, or ask Claude Code: the repo ships a `/analyse-deck` skill
+    that writes them from the `--brief` file (token-lean: no API keys, no
+    extra cost beyond your existing Claude plan).
   - 📉 **Price History** — every priced refresh appends a dated snapshot
     (deck value, cost to finish, cheapest finish) to `.price-history.json`
     in the vault, rendered as a collapsed table with the overall trend in
