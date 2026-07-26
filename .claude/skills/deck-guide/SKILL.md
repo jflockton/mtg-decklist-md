@@ -40,6 +40,18 @@ section across --force/--recheck, same as the review sections.
 **Use `###` or smaller headings inside the guide — never `##`** (a `##` would
 break the section-preservation regex).
 
+**Never hard-wrap prose.** Obsidian renders every single newline as a real
+line break, so 80-column wrapping shows as ragged lines mid-sentence. Write
+each paragraph, bullet and numbered item as ONE long line and let Obsidian
+soft-wrap. Newlines only between blocks (headings, table rows, list items,
+blank lines).
+
+**Define shorthand on first use.** James is still learning MTG jargon — the
+first time the guide uses ETB ("enters the battlefield"), the bin
+(graveyard), mana symbols like {1}{U}{B}{R}, or a keyword mechanic (connive,
+mayhem, miracle…), gloss it in brackets or a one-liner. After that, use the
+shorthand freely.
+
 ## Structure (adapt, don't pad — skip a block if the deck doesn't need it)
 
 1. **The 100, by role** — group every card into functional categories with
