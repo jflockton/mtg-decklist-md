@@ -395,6 +395,77 @@ def add_deck_to_collection(out_dir: Path, deck_name: str,
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 
 
+def merge_collection(out_dir: Path, list_path: str) -> None:
+    """--merge-collection: diff a full owned-cards export against
+    _Collection.md and append what's missing. Append-only — nothing is ever
+    removed; cards present in the collection but absent from the new list are
+    reported (as prose the parser ignores) for you to prune by hand.
+    """
+    src = Path(list_path)
+    if not src.is_file():
+        sys.exit(f"List file not found: {src.resolve()}")
+    new_cards: dict[str, list] = {}  # key -> [qty, display name]
+    for line in src.read_text(encoding="utf-8-sig").splitlines():
+        parsed = parse_card_line(line)
+        if parsed:
+            qty, disp = parsed
+            entry = new_cards.setdefault(disp.lower(), [0, disp])
+            entry[0] += qty
+    if not new_cards:
+        sys.exit(f"No cards found in {src}")
+
+    collection = load_collection(out_dir)
+    owned = collection[1] if collection else {}
+    # Original casing for the manual-review report (owned keys are lowercased)
+    display: dict[str, str] = {}
+    coll_file = collection_path(out_dir)
+    if coll_file.is_file():
+        for line in coll_file.read_text(encoding="utf-8-sig").splitlines():
+            parsed = parse_card_line(line)
+            if parsed and re.match(r"\d", line.strip()):
+                display.setdefault(parsed[1].lower(), parsed[1])
+    additions = []  # (display, qty to add)
+    increases = covered = 0
+    for key, (qty, disp) in sorted(new_cards.items()):
+        have = owned.get(key, 0)
+        if have <= 0:
+            additions.append((disp, qty))
+        elif qty > have:
+            additions.append((disp, qty - have))
+            increases += 1
+        else:
+            covered += 1
+    only_current = sorted(
+        k for k in owned
+        if k not in new_cards and k not in BASIC_LAND_NAMES
+        and not k.startswith("snow-covered ")
+    )
+
+    today = date.today().isoformat()
+    section = [f"\n## 📦 Merged from {src.name} ({today})", ""]
+    if additions:
+        section.extend(f"{qty} {disp}" for disp, qty in additions)
+    else:
+        section.append("Nothing new — the collection already covered this list.")
+    if only_current:
+        section.append("")
+        section.append(f"⚠️ In the collection but NOT in {src.name} "
+                       f"({len(only_current)}) — remove by hand if truly gone:")
+        section.append(", ".join(display.get(k, k) for k in only_current))
+    section.append("")
+    with open(coll_file, "a", encoding="utf-8") as f:
+        f.write("\n".join(section))
+
+    print(f"Merged:    {src.name} -> {coll_file.name}")
+    print(f"           new cards: {len(additions) - increases}"
+          f" | quantity top-ups: {increases}"
+          f" | already covered: {covered}")
+    if only_current:
+        print(f"           in collection only: {len(only_current)}"
+              " (kept — listed in the new section for manual review)")
+    print("Tip:       run --recheck to refresh every deck's buy lists.")
+
+
 def collection_value(out_dir: Path) -> None:
     """Price the whole collection (--collection-value): totals per market and
     a top-20 table, printed to the console and written into _Collection.md as
@@ -1829,6 +1900,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--collection-value", action="store_true", dest="collection_value",
         help="price your _Collection.md (basics excluded) and write a "
              "💰 Collection Value section into it")
+    parser.add_argument(
+        "--merge-collection", metavar="FILE", dest="merge_collection",
+        help="diff a full owned-cards export against _Collection.md and "
+             "append what's missing (append-only; removals only reported)")
     return parser
 
 
@@ -1855,6 +1930,12 @@ def main() -> None:
         if args.source:
             parser.error("--collection-value takes no other arguments.")
         collection_value(resolve_out_dir())
+        return
+    if args.merge_collection:
+        if args.source:
+            parser.error("--merge-collection takes the list file as its own "
+                         "argument — no deck URL/file alongside it.")
+        merge_collection(resolve_out_dir(), args.merge_collection)
         return
     if args.recheck is not None:
         if args.source:
