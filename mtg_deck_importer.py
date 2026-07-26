@@ -820,7 +820,8 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
 
 
 REVIEW_SECTIONS = ["🧠 First Impressions", "💪 Strengths", "⚠️ Weaknesses",
-                   "🔄 Cards to Consider Swapping", "📝 Play Notes"]
+                   "🔄 Cards to Consider Swapping", "📝 Play Notes",
+                   "🧭 Deck Guide"]
 
 
 def _eur_cell(amount):
