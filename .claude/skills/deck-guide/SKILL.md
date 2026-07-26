@@ -75,6 +75,15 @@ colourless {C} as ◇.
 5. **💰 Budget notes** — use the note's own price data; GBP-first (James is
    UK — recommend Cardmarket/Magic Madhouse, warn about US shipping); name
    the expensive cards and what to cut to hit a lower budget.
+   **Always include a cheaper-alternatives table** for the deck's priciest
+   cards (roughly anything over ~£4, and certainly the top handful that
+   dominate the bill): `| Cut | ≈ saved | Replace with | ≈ cost |`, where
+   each replacement is a *functional* substitute — same job, honest note on
+   what's lost — not just any cheap card. Verify replacement prices against
+   Scryfall (or the note's own price table if the card is in the deck) and
+   flag when a swap also changes the bracket (e.g. cutting a Game Changer).
+   For a deck James already fully owns, frame it as "which cards could move
+   to another deck and what would slot in here" rather than a buy decision.
 6. **📈 Upgrade path** — ordered next-buys toward the bracket above.
 
 ## Voice
