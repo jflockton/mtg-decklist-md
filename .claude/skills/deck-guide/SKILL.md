@@ -48,9 +48,13 @@ blank lines).
 
 **Define shorthand on first use.** James is still learning MTG jargon — the
 first time the guide uses ETB ("enters the battlefield"), the bin
-(graveyard), mana symbols like {1}{U}{B}{R}, or a keyword mechanic (connive,
-mayhem, miracle…), gloss it in brackets or a one-liner. After that, use the
-shorthand freely.
+(graveyard), or a keyword mechanic (connive, mayhem, miracle…), gloss it in
+brackets or a one-liner. After that, use the shorthand freely.
+
+**Mana costs as emoji dots, never `{U}`-style symbols.** ⚪ = white, 🔵 =
+blue, ⚫ = black, 🔴 = red, 🟢 = green; generic cost is a plain number and
+{X} is a plain X. So Doom is 1🔵⚫🔴, mayhem {3}{U}{R} is "mayhem 3🔵🔴",
+{X}{R}{R} is X🔴🔴. Write {T} as "Tap:" and true colourless {C} as ◇.
 
 ## Structure (adapt, don't pad — skip a block if the deck doesn't need it)
 
