@@ -52,12 +52,12 @@ first time the guide uses ETB ("enters the battlefield"), the bin
 brackets or a one-liner. After that, use the shorthand freely.
 
 **Mana costs as emoji dots, never `{U}`-style symbols.** ⚪ = white, 🔵 =
-blue, ⚫ = black, 🔴 = red, 🟢 = green; generic cost is a plain number or X,
-**followed by a comma** when coloured pips come after it (so "2,⚫" is
-unambiguously 2 generic + one black, never two black). Pips repeat, one dot
-per pip — never a count after the comma. So Doom is 1,🔵⚫🔴; mayhem
-{3}{U}{R} is "mayhem 3,🔵🔴"; {X}{R}{R} is X,🔴🔴; {B}{B}{B} is ⚫⚫⚫ (no
-generic part, no comma). Write {T} as "Tap:" and true colourless {C} as ◇.
+blue, ⚫ = black, 🔴 = red, 🟢 = green; generic cost is a plain number or X.
+**Comma-separate every element** so a number can never be misread as
+multiplying a dot: Doom is 1,🔵,⚫,🔴; mayhem {3}{U}{R} is "mayhem 3,🔵,🔴";
+{X}{R}{R} is X,🔴,🔴; {B}{B}{B} is ⚫,⚫,⚫; a lone {2}{B} is 2,⚫. One dot
+per pip — never a count in front of a dot. Write {T} as "Tap:" and true
+colourless {C} as ◇.
 
 ## Structure (adapt, don't pad — skip a block if the deck doesn't need it)
 
