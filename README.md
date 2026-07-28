@@ -60,6 +60,7 @@ python mtg_deck_importer.py --reimport [id]
 python mtg_deck_importer.py --list
 python mtg_deck_importer.py --collection-value
 python mtg_deck_importer.py --brief [id]
+python mtg_deck_importer.py --index
 python mtg_deck_importer.py --help
 ```
 
@@ -77,6 +78,7 @@ decklist.
 | `--reimport <id>` | Same as above, for a single deck by id. |
 | `--list` | Print every deck's id and name, then exit. Use it to find the id for `--recheck <id>` / `--reimport <id>`. |
 | `--collection-value` | Price everything in `_Collection.md` (basic lands excluded) and write a **💰 Collection Value** section into it — totals per market plus a top-20 table, replaced in place on re-runs. |
+| `--index` | Regenerate the `_Decks.md` master index from the notes' current frontmatter — no network needed. (Also happens automatically after every import/recheck.) |
 | `--brief [id]` | Write a compact **analysis brief** per deck (all, or one by id) into the vault's `_analysis-briefs/` — deck shape, role groups, and oracle text for recent cards only. Input for the `/analyse-deck` Claude skill (see below). |
 | `--help` | Show the built-in help and exit. |
 

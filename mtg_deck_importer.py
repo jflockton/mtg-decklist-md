@@ -2159,6 +2159,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--brief", nargs="?", const="__all__", default=None, metavar="ID",
         help="write a compact analysis brief per deck (all, or one by ID) "
              "into the vault's _analysis-briefs/ — input for /analyse-deck")
+    parser.add_argument(
+        "--index", action="store_true",
+        help="regenerate the _Decks.md master index from the notes' current "
+             "frontmatter (no network; also runs after every import/recheck)")
     return parser
 
 
@@ -2180,6 +2184,11 @@ def main() -> None:
 
     if args.list_ids:
         list_decks(resolve_out_dir())
+        return
+    if args.index:
+        out_dir = resolve_out_dir()
+        update_deck_index(out_dir)
+        print(f"Updated:   {DECKS_INDEX} in {out_dir}")
         return
     if args.collection_value:
         if args.source:
