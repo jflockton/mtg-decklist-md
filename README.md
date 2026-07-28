@@ -210,6 +210,10 @@ Two files in your configured vault folder:
   - 💰 **Deck Value** — deck totals per source with a ≈ GBP column (also in
     the frontmatter for Dataview) and a **🛒 cost-to-finish line** showing
     what completing the deck costs you against your collection
+  - 🃏 **`_Decks.md` master index** — auto-regenerated in the vault after
+    every import/recheck: one linked row per deck (name, commander, value,
+    owned count, cost to finish, price date) plus vault-wide totals. The
+    "pull it all together" note — never edit it by hand.
   - 📊 **Deck Shape** — locally computed stats: type counts, mana curve,
     keyword role buckets (blink / draw / removal / …) and a bracket
     checklist (Game Changers snapshot, extra turns, mass land denial).
