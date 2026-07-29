@@ -725,6 +725,9 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
         r.raise_for_status()
         for card in r.json().get("data", []):
             p = card.get("prices", {})
+            faces = card.get("card_faces") or []
+            oracle = card.get("oracle_text") or " // ".join(
+                f.get("oracle_text", "") for f in faces)
             entry = {
                 "name": card["name"],  # canonical spelling, saves a lookup later
                 "eur": float(p["eur"]) if p.get("eur") else None,
@@ -732,6 +735,11 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
                 "tix": float(p["tix"]) if p.get("tix") else None,
                 "mp": manapool_index().get(card["name"].lower()),
                 "img": scryfall_card_image(card),
+                # for 📊 Deck Shape and --brief — no extra requests
+                "type": card.get("type_line", ""),
+                "cmc": card.get("cmc"),
+                "oracle": oracle,
+                "released": card.get("released_at", ""),
             }
             prices[card["name"].lower()] = entry
             # Let a front-face name find its double-faced card
@@ -822,6 +830,44 @@ def price_report(decklist: list[tuple[int, str]], prices: dict[str, dict]) -> di
 REVIEW_SECTIONS = ["🧠 First Impressions", "💪 Strengths", "⚠️ Weaknesses",
                    "🔄 Cards to Consider Swapping", "📝 Play Notes",
                    "🧭 Deck Guide"]
+
+# Analysis prose — written per deck (by you, or by Claude via the
+# /analyse-deck skill) and preserved across rebuilds exactly like reviews.
+ANALYSIS_SECTIONS = ["🎮 Play Pattern", "🏆 Win Conditions",
+                     "⚠️ Interactions & Warnings"]
+
+# WotC's Commander Bracket "Game Changers" list — best-effort snapshot
+# (April 2025 update); refresh from the official list when brackets change.
+GAME_CHANGERS = {n.lower() for n in [
+    "Ancient Tomb", "Aura Shards", "Bolas's Citadel", "Chrome Mox",
+    "Cyclonic Rift", "Demonic Tutor", "Drannith Magistrate",
+    "Enlightened Tutor", "Expropriate", "Field of the Dead",
+    "Fierce Guardianship", "Force of Will", "Gaea's Cradle", "Glacial Chasm",
+    "Grand Arbiter Augustin IV", "Grim Monolith", "Humility", "Imperial Seal",
+    "Intuition", "Jeska's Will", "Jin-Gitaxias, Core Augur",
+    "Kinnan, Bonder Prodigy", "Lion's Eye Diamond", "Mana Drain", "Mana Vault",
+    "Mishra's Workshop", "Mox Diamond", "Mystical Tutor",
+    "Narset, Parter of Veils", "Necropotence", "Notion Thief",
+    "Opposition Agent", "Orcish Bowmasters", "Rhystic Study",
+    "Serra's Sanctum", "Smothering Tithe", "Survival of the Fittest",
+    "Teferi's Protection", "Tergrid, God of Fright", "Thassa's Oracle",
+    "The One Ring", "The Tabernacle at Pendrell Vale", "Underworld Breach",
+    "Urza, Lord High Artificer", "Vampiric Tutor", "Vorinclex, Voice of Hunger",
+    "Winota, Joiner of Forces", "Yuriko, the Tiger's Shadow",
+]}
+
+# Oracle-text keyword heuristics for the Deck Shape role table — first match
+# wins, lands are never tagged. Crude by design (~85% right, zero cost).
+ROLE_PATTERNS = [
+    ("🔁 Blink", r"exile[^.]*return[^.]*battlefield"),
+    ("💥 Board wipes", r"(destroy|exile|return) (all|each)"),
+    ("🚫 Counterspells", r"counter target"),
+    ("🛃 Removal", r"(destroy|exile) target"),
+    ("📚 Draw", r"draw (a|one|two|three|that many) card"),
+    ("💎 Mana rocks", r"\{t\}: add \{"),
+    ("🌱 Ramp", r"search your library for .* land"),
+    ("🛡️ Protection", r"(hexproof|indestructible|protection from)"),
+]
 
 
 def _eur_cell(amount):
@@ -1037,6 +1083,142 @@ def render_history(entries: list[dict]) -> str:
                     body)
 
 
+def deck_shape(decklist: list[tuple[int, str]],
+               prices: dict[str, dict]) -> dict:
+    """Locally computed deck stats from the card data the price fetch already
+    returned: type counts, mana curve, keyword role buckets and the bracket
+    checklist facts. No extra network, no AI — pure counting.
+    """
+    types: dict[str, int] = {}
+    curve: dict[int, int] = {}
+    roles: dict[str, list[str]] = {label: [] for label, _ in ROLE_PATTERNS}
+    gc, extra_turns, land_denial = [], [], []
+    for qty, name in decklist:
+        p = prices.get(name.lower()) or {}
+        tline = (p.get("type") or "").split("//")[0]
+        for major in ("Creature", "Planeswalker", "Battle", "Instant",
+                      "Sorcery", "Artifact", "Enchantment", "Land"):
+            if major in tline:
+                types[major] = types.get(major, 0) + qty
+                break
+        canon = p.get("name", name)
+        if canon.lower() in GAME_CHANGERS or name.lower() in GAME_CHANGERS:
+            gc.append(canon)
+        if "Land" in tline:
+            continue
+        if p.get("cmc") is not None:
+            b = min(int(p["cmc"]), 7)
+            curve[b] = curve.get(b, 0) + qty
+        text = (p.get("oracle") or "").lower()
+        if "extra turn" in text:
+            extra_turns.append(canon)
+        if re.search(r"destroy all lands|lands don't untap", text):
+            land_denial.append(canon)
+        for label, pat in ROLE_PATTERNS:
+            if re.search(pat, text):
+                roles[label].append(name)
+                break
+    return {"types": types, "curve": curve, "roles": roles, "gc": gc,
+            "extra_turns": extra_turns, "land_denial": land_denial}
+
+
+def render_deck_shape(shape: dict) -> str:
+    types = shape["types"]
+    type_line = " · ".join(
+        f"{types[t]} {t.lower()}{'s' if types[t] != 1 else ''}"
+        for t in ("Creature", "Instant", "Sorcery", "Artifact", "Enchantment",
+                  "Planeswalker", "Battle", "Land") if types.get(t))
+    curve = shape["curve"]
+    cols = range(0, 8)
+    curve_head = " | ".join(str(c) if c < 7 else "7+" for c in cols)
+    curve_row = " | ".join(str(curve.get(c, 0)) for c in cols)
+    role_rows = "\n".join(
+        f"| {label} | {len(cards)} | {', '.join(cards[:10])}"
+        f"{'…' if len(cards) > 10 else ''} |"
+        for label, cards in shape["roles"].items() if cards)
+    gc = shape["gc"]
+    checklist = [
+        ("✅" if not gc else "⚠️") + f" **{len(gc)} Game Changer(s)**"
+        + (f": {', '.join(gc)}" if gc else "")
+        + " *(best-effort snapshot of the official list)*",
+        ("✅ No extra-turn cards" if not shape["extra_turns"] else
+         f"⚠️ Extra turns: {', '.join(shape['extra_turns'])}"),
+        ("✅ No mass land denial detected" if not shape["land_denial"] else
+         f"⚠️ Possible mass land denial: {', '.join(shape['land_denial'])}"),
+    ]
+    checks = "\n".join(f"- {c}" for c in checklist)
+    return f"""## 📊 Deck Shape
+
+*Computed from card data — refreshes with every recheck. Role tags are oracle-text keyword matches (~85% right); lands untagged.*
+
+**Types:** {type_line}
+
+| Mana value | {curve_head} |
+|------------|{"|".join(["---:"] * 8)}|
+| Cards | {curve_row} |
+
+| Role | # | Cards |
+|------|--:|-------|
+{role_rows}
+
+**Bracket checklist** *(guideline, not a ruling — combos/tutors need human judgement)*:
+{checks}"""
+
+
+BRIEFS_DIR = "_analysis-briefs"
+RECENT_CUTOFF = "2025-09-01"  # cards newer than this get oracle text in briefs
+
+
+def write_brief(out_dir: Path, deck_id: int, note: Path) -> Path | None:
+    """A compact analysis brief for one deck (--brief): everything a model
+    needs to write the 🎮/🏆/⚠️ sections — deck shape, role groups, and
+    oracle text ONLY for recent cards it may not know. Token-lean by design.
+    """
+    text = note.read_text(encoding="utf-8")
+    decklist = _note_decklist(text)
+    if not decklist:
+        print(f"[{deck_id}] {note.name}: no deck list — skipped")
+        return None
+    name_m = re.search(r"^deck-name: (.+)$", text, re.M)
+    deck_name = name_m.group(1).strip() if name_m else note.stem
+    prices = fetch_prices([n for _, n in decklist])
+    shape = deck_shape(decklist, prices)
+
+    commander = decklist[0][1]
+    listing = "\n".join(f"{qty} {n}" for qty, n in decklist)
+    recent = []
+    for _qty, n in decklist:
+        p = prices.get(n.lower()) or {}
+        if p.get("released", "") >= RECENT_CUTOFF and p.get("oracle"):
+            recent.append(f"### {p.get('name', n)} — {p.get('type')}\n"
+                          f"{p['oracle']}")
+    recent_block = ("\n\n## 🆕 Recent cards (oracle text — the model may not "
+                    "know these)\n\n" + "\n\n".join(recent)) if recent else ""
+    todo = [h for h in ANALYSIS_SECTIONS
+            if not re.search(rf"## {re.escape(h)}\n\n(?!-\n)\S", text)]
+    brief = f"""# Analysis brief — [{deck_id}] {deck_name}
+
+Commander: {commander}
+Note file: {note.name}
+Sections still empty: {", ".join(todo) if todo else "none — already analysed"}
+
+{render_deck_shape(shape)}
+
+## 📜 Deck List
+
+```
+{listing}
+```{recent_block}
+"""
+    briefs = out_dir / BRIEFS_DIR
+    briefs.mkdir(exist_ok=True)
+    dest = briefs / f"{deck_id:02d} - {ILLEGAL_FILENAME_CHARS.sub('', deck_name)}.md"
+    dest.write_text(brief, encoding="utf-8")
+    print(f"[{deck_id}] brief → {dest.name}"
+          + (" (already analysed)" if not todo else ""))
+    return dest
+
+
 def buy_frontmatter(buy: dict, rates: dict | None, cheap: dict | None) -> str:
     lines = [f"owned: {buy['owned_unique']}/{buy['unique']}",
              f"buy-eur: {buy['totals']['eur']:.2f}",
@@ -1160,11 +1342,12 @@ understand it); lines without a code use any printing.
 
 
 def extract_reviews(text: str) -> dict[str, str]:
-    """Pull hand-written review content out of an existing note so a --force
-    regeneration refreshes the data without destroying your thoughts.
+    """Pull hand-written review AND analysis content out of an existing note
+    so a --force regeneration refreshes the data without destroying your
+    thoughts (or Claude's /analyse-deck prose).
     """
     reviews = {}
-    for heading in REVIEW_SECTIONS:
+    for heading in REVIEW_SECTIONS + ANALYSIS_SECTIONS:
         m = re.search(rf"## {re.escape(heading)}\n(.*?)(?=\n## )", text, re.S)
         if m:
             body = m.group(1).strip()
@@ -1177,7 +1360,8 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
                image_url: str, deck_url: str, report: dict,
                buy: dict | None, collection_name: str | None,
                reviews: dict[str, str], choices: dict[str, dict],
-               deck_id: int, history: list[dict] | None = None) -> str:
+               deck_id: int, history: list[dict] | None = None,
+               shape_section: str = "") -> str:
     """The whole note. Reading order after the reviews: card prices &
     gallery, the deck list, what to buy to complete it, the Cheapest Build,
     and what to buy to complete that.
@@ -1201,6 +1385,12 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
     review_block = "\n\n".join(
         f"## {heading}\n\n{reviews.get(heading, '-')}" for heading in REVIEW_SECTIONS
     )
+    analysis_block = "\n\n".join(
+        f"## {heading}\n\n{reviews.get(heading, '-')}"
+        for heading in ANALYSIS_SECTIONS
+    )
+    if shape_section:
+        analysis_block = f"{shape_section}\n\n{analysis_block}"
     history_block = f"\n{render_history(history)}\n" if history else ""
 
     return f"""---
@@ -1225,6 +1415,8 @@ price-date: {today}
 ![{commander_line}|290]({image_url})
 
 {review_block}
+
+{analysis_block}
 
 {render_card_tables(report)}
 ## 📜 Deck List
@@ -1492,6 +1684,59 @@ def deck_id_map(out_dir: Path) -> dict[int, Path]:
     return ids
 
 
+DECKS_INDEX = "_Decks.md"
+
+
+def update_deck_index(out_dir: Path) -> None:
+    """Regenerate _Decks.md — the master index: one row per deck note with an
+    Obsidian link, commander, value, owned count and cost to finish (from the
+    frontmatter already in each note). Rebuilt wholesale after every import
+    and recheck so it can never drift; not a deck note itself (leading _).
+    """
+    ids = deck_id_map(out_dir)
+    if not ids:
+        return
+
+    rows = []
+    tot_val = tot_buy = 0.0
+    for did in sorted(ids):
+        text = ids[did].read_text(encoding="utf-8")
+
+        def fm(key: str) -> str:
+            m = re.search(rf"^{key}: (.+)$", text, re.M)
+            return m.group(1).strip() if m else ""
+
+        name = fm("deck-name") or ids[did].stem
+        buy = fm("buy-cheapest-gbp") or fm("buy-gbp")
+        val = fm("price-gbp")
+        tot_val += float(val) if val else 0.0
+        tot_buy += float(buy) if buy else 0.0
+        owned = fm("owned")
+        finish = ("🎉 owned" if owned and buy and float(buy) == 0
+                  else f"£{float(buy):,.2f}" if buy else "—")
+        rows.append(
+            f"| {did} | [[{ids[did].stem}\\|{name}]] | {fm('commander')} | "
+            f"{f'£{float(val):,.2f}' if val else '—'} | {owned or '—'} | "
+            f"{finish} | {fm('price-date') or '—'} |")
+    body = "\n".join(rows)
+    today = date.today().isoformat()
+    (out_dir / DECKS_INDEX).write_text(f"""---
+tags: [mtg, index, moc]
+updated: {today}
+---
+
+# 🃏 Deck Index
+
+Auto-generated by the deck importer after every import/recheck — don't edit,
+it will be overwritten. **{len(ids)} decks** · total value ≈ **£{tot_val:,.2f}**
+· cost to finish them all (cheapest versions) ≈ **£{tot_buy:,.2f}**.
+
+| # | Deck | Commander | Value | Own | To finish | Priced |
+|--:|------|-----------|------:|:---:|----------:|--------|
+{body}
+""", encoding="utf-8")
+
+
 def next_deck_id(out_dir: Path) -> int:
     """The id to give a brand-new note: one past the highest already assigned.
     Does not touch existing notes (that is deck_id_map's job).
@@ -1588,13 +1833,15 @@ def _recheck_from_stored(did: int, note: Path, collection_name: str,
     cheap = cheapest_buy(buy, choices, report["rates"])
     history, alerts = record_history(note.parent, did, deck["name"], report,
                                      buy, cheap, choices)
+    shape_section = render_deck_shape(deck_shape(decklist, prices))
     new_text = build_note(deck, decklist, image_url, deck_url, report, buy,
                           collection_name, extract_reviews(text), choices, did,
-                          history)
+                          history, shape_section)
     if created:  # keep the original import date, not the refresh date
         new_text = re.sub(r"^created: .*$", f"created: {created}", new_text,
                           count=1, flags=re.M)
     note.write_text(new_text, encoding="utf-8")
+    update_deck_index(note.parent)
     print(f"[{did}] {note.name}: value ~EUR {report['totals']['eur']:,.2f}"
           f" — own {buy['owned_unique']}/{buy['unique']}"
           f" — to buy {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f})")
@@ -1724,9 +1971,11 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
     cheap = cheapest_buy(buy, choices, report["rates"]) if buy else None
     history, alerts = record_history(out_dir, deck_id, deck["name"], report,
                                      buy, cheap, choices)
+    shape_section = render_deck_shape(deck_shape(decklist, prices))
     note_path.write_text(
         build_note(deck, decklist, image_url, deck_url, report, buy,
-                   collection_name, reviews, choices, deck_id, history),
+                   collection_name, reviews, choices, deck_id, history,
+                   shape_section),
         encoding="utf-8",
     )
 
@@ -1737,6 +1986,7 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
         if txt_src != dest.resolve():
             shutil.move(str(txt_src), dest)  # move() survives cross-volume vaults
             print(f"Archived:  {dest}")
+    update_deck_index(out_dir)
 
     total = sum(qty for qty, _ in decklist)
     totals = report["totals"]
@@ -1905,6 +2155,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--merge-collection", metavar="FILE", dest="merge_collection",
         help="diff a full owned-cards export against _Collection.md and "
              "append what's missing (append-only; removals only reported)")
+    parser.add_argument(
+        "--brief", nargs="?", const="__all__", default=None, metavar="ID",
+        help="write a compact analysis brief per deck (all, or one by ID) "
+             "into the vault's _analysis-briefs/ — input for /analyse-deck")
+    parser.add_argument(
+        "--index", action="store_true",
+        help="regenerate the _Decks.md master index from the notes' current "
+             "frontmatter (no network; also runs after every import/recheck)")
     return parser
 
 
@@ -1927,6 +2185,11 @@ def main() -> None:
     if args.list_ids:
         list_decks(resolve_out_dir())
         return
+    if args.index:
+        out_dir = resolve_out_dir()
+        update_deck_index(out_dir)
+        print(f"Updated:   {DECKS_INDEX} in {out_dir}")
+        return
     if args.collection_value:
         if args.source:
             parser.error("--collection-value takes no other arguments.")
@@ -1937,6 +2200,18 @@ def main() -> None:
             parser.error("--merge-collection takes the list file as its own "
                          "argument — no deck URL/file alongside it.")
         merge_collection(resolve_out_dir(), args.merge_collection)
+        return
+    if args.brief is not None:
+        if args.source:
+            parser.error("--brief takes an optional deck id, not a URL/file.")
+        out_dir = resolve_out_dir()
+        ids = deck_id_map(out_dir)
+        targets = ids if args.brief == "__all__" else \
+            {_parse_id(args.brief): ids.get(_parse_id(args.brief))}
+        for did, note in sorted(targets.items()):
+            if note is None:
+                sys.exit(f"No deck with id {did}. Run --list to see the ids.")
+            write_brief(out_dir, did, note)
         return
     if args.recheck is not None:
         if args.source:
