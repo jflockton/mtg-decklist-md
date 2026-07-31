@@ -74,8 +74,9 @@ python mtg_deck_importer.py --list                       # show deck ids
 python mtg_deck_importer.py --delete [id] [-y]           # remove a deck
 python mtg_deck_importer.py --reindex                    # renumber deck ids
 python mtg_deck_importer.py --index                      # rebuild _Decks.md
+python mtg_deck_importer.py --collection <file>          # create the collection file
+python mtg_deck_importer.py --merge-collection <file>    # merge into an existing one
 python mtg_deck_importer.py --collection-value           # price your collection
-python mtg_deck_importer.py --merge-collection <file>    # merge an owned-cards export
 python mtg_deck_importer.py --brief [id]                 # write analysis briefs
 python mtg_deck_importer.py --help
 ```
@@ -124,8 +125,9 @@ assigned the next time a command reads the notes.
 
 | Command | What it does |
 |---------|--------------|
-| `--collection-value` | Price everything in your collection file (basic lands excluded) and write a **💰 Collection Value** section into it: totals per market plus a top-20 table, replaced in place on re-runs. |
-| `--merge-collection <file>` | Diff a full owned-cards export against your collection file and append what's missing, under a dated heading. **Append-only** — nothing is ever deleted; cards in your collection but absent from the export are only *reported* for you to prune by hand. |
+| `--collection <file>` | **Create** the collection file from a card-list export — see [Getting your cards in](#getting-your-cards-in). Merges duplicate rows, strips set codes and foil markers, writes a plain alphabetical list. Refuses to overwrite a collection that already has cards unless you add `--force`. |
+| `--merge-collection <file>` | **Add to** an existing collection: diff an export against it and append what's missing under a dated heading. **Append-only** — nothing is ever deleted; cards in your collection but absent from the export are only *reported* for you to prune by hand. |
+| `--collection-value` | Price everything in your collection (basic and snow-covered lands excluded) and write a **💰 Collection Value** section into it: totals per market plus a top-20 table, replaced in place on re-runs. |
 
 ### 🧠 Analysis
 
@@ -161,9 +163,10 @@ python mtg_deck_importer.py --list
 python mtg_deck_importer.py --delete 7 -y
 python mtg_deck_importer.py --reindex
 
-# Collection jobs
+# Collection: create it, then keep it topped up
+python mtg_deck_importer.py --collection "moxfield-export.txt"
+python mtg_deck_importer.py --merge-collection "latest-order.txt"
 python mtg_deck_importer.py --collection-value
-python mtg_deck_importer.py --merge-collection "moxfield-export.txt"
 ```
 
 ## 🌐 Deck sources
@@ -195,19 +198,68 @@ dated filename. So the update loop is: change the deck, re-run with `--force`, d
 
 ## 🗃️ Your collection
 
-Keep a `_Collection.md` in the output folder (or point `COLLECTION_FILE` elsewhere) listing
-what you own — one `N Card Name` per line, same format as a deck list. Headings and prose
-are ignored, so it can be a perfectly normal Obsidian note.
+The collection file is what turns a deck note into a **shopping decision** — it's how the
+app knows which cards you already own. It lives at `_Collection.md` in your output folder
+(or wherever `COLLECTION_FILE` points).
 
-When it exists, every deck note gains a **cost-to-finish** line and two **🛒 Cards to
-Complete** sections: one at the deck's own card versions, one at the cheapest versions,
-each with a copy-paste buy list. The owned count and buy totals also land in the
-frontmatter (`owned`, `buy-eur`, `buy-gbp`, `buy-mp`, `buy-cheapest-eur`,
-`buy-cheapest-gbp`) for Dataview.
+**The format is one card per line, `N Card Name` — the same as a deck list.** That's the
+whole spec. Only lines starting with a digit are read, so you can add headings, notes and
+tables anywhere around the list and they're ignored:
 
-> No collection file? Imports still work — the Cards to Complete sections are simply
-> skipped. `--recheck` and `--collection-value`, though, **stop with an error**, since
-> comparing against your collection is the whole point of them.
+```markdown
+# 🗃️ My Card Collection
+
+Anything that isn't a card line is ignored, so notes like this are fine.
+
+1 Sol Ring
+3 Lightning Bolt
+23 Mountain
+```
+
+### Getting your cards in
+
+Point `--collection` at any card-list export and it writes the file for you:
+
+```bash
+python mtg_deck_importer.py --collection "moxfield-export.txt"
+```
+
+It **merges duplicate rows** (exports split one card across printings — those are all still
+copies you own), strips set codes and `*F*` foil markers, sorts alphabetically, and writes a
+plain list with a two-line header. Nothing else — it's yours to annotate afterwards.
+
+Already have a collection file? `--collection` **won't overwrite it** (it's hand-curated and
+not reproducible from an export) — it tells you to use `--merge-collection` instead, which
+appends only the genuinely new cards under a dated heading. Use `--collection --force` only
+if you really do want to start over.
+
+| You want to… | Command |
+|--------------|---------|
+| Create the file from an export | `--collection <file>` |
+| Add a new order/export to it | `--merge-collection <file>` |
+| Add a precon you just bought | `--own --force <that deck's source>` |
+| Know what it's all worth | `--collection-value` |
+
+### What happens without one
+
+The app always tells you which of these three states it's in, and what that costs you:
+
+| State | What you'll see | What still works |
+|-------|-----------------|------------------|
+| ✅ **Ready** | `Collection: _Collection.md — 312 unique cards (415 copies)` | Everything. |
+| ⚠️ **Empty** — file exists but has no card lines | A warning naming the file, plus the fix | Imports and refreshes run **without** the 🛒 Cards to Complete sections. `--collection-value` stops. |
+| ⚠️ **Missing** — no file at all | A warning naming the expected path, plus the fix | Same as Empty. |
+
+Nothing fails silently: if the ownership comparison is skipped you get a `⚠️` line saying so
+and the exact command to fix it. Prices, galleries, deck lists and the Cheapest Build never
+depend on the collection.
+
+### What you get when it's there
+
+Every deck note gains a **cost-to-finish** line and two **🛒 Cards to Complete** sections —
+one at the deck's own card versions, one at the cheapest versions, each with a copy-paste buy
+list. The owned count and buy totals also land in the frontmatter (`owned`, `buy-eur`,
+`buy-gbp`, `buy-mp`, `buy-cheapest-eur`, `buy-cheapest-gbp`) for Dataview.
 
 <details>
 <summary>Quantity awareness, flavour names, and wishlist precons</summary>
@@ -309,14 +361,29 @@ paper printing. Each row shows how many of the deck's cards that source actually
 
 ## 🤖 Claude Code skills
 
-The repo ships three optional [Claude Code](https://claude.com/claude-code) skills that read
-these notes. They need no API key — they run on your existing Claude plan.
+The Python script owns all the *facts* (prices, ownership, deck shape). The judgement calls —
+strategy, sequencing, what to buy — are handled by [Claude Code](https://claude.com/claude-code)
+**skills** that live in this repo under `.claude/skills/<name>/SKILL.md`.
 
-| Skill | What it does |
-|-------|--------------|
-| `/analyse-deck <id>` | Fills 🎮 Play Pattern · 🏆 Win Conditions · ⚠️ Interactions & Warnings from the deck's `--brief` file. Token-lean: the brief is its only input. |
-| `/deck-guide <id>` | Writes a full strategy guide into the note's 🧭 Deck Guide section — the 100 by role, play pattern, warnings, bracket justification, budget notes and an upgrade path. |
-| `/buy-deck <id>` | Finds the genuinely cheapest way to buy a deck's missing cards across UK shops, solving for **total cost including postage** rather than per-card price. |
+A skill is just a markdown prompt. Claude Code loads it **only when you invoke it** by name in
+a session opened on this repo, so it costs nothing until used, needs no API key, and runs on
+your existing Claude plan. Each one reads the notes the importer wrote and writes prose back
+into a specific preserved heading — never touching the generated data around it.
+
+| Skill | Writes into | What it does |
+|-------|-------------|--------------|
+| `/analyse-deck <id>` | 🎮 Play Pattern · 🏆 Win Conditions · ⚠️ Interactions & Warnings | Deliberately token-lean: its only input is the deck's `--brief` file, never the full note. Run `--brief <id>` first. |
+| `/deck-guide <id>` | 🧭 Deck Guide | A full strategy guide — the 100 by role, play pattern, non-obvious warnings, bracket justification, budget notes with cheaper alternatives, and an upgrade path. |
+
+<details>
+<summary>A third, local-only skill</summary>
+
+`.claude/skills/buy-deck/` (`/buy-deck <id>`) solves a deck's Buy List for **lowest total cost
+including postage** across UK shops, rather than lowest price per card — which usually means
+consolidating into fewer baskets. It is **deliberately not committed**: it contains a personal
+marketplace account name and saved wants-list ids. Sanitise those into `.env` settings before
+sharing it.
+</details>
 
 ## ❓ FAQ
 

@@ -132,6 +132,44 @@ def load_collection(out_dir: Path) -> tuple[str, dict[str, int]] | None:
     return path.name, owned
 
 
+# The three states a collection file can be in. "empty" is its own case
+# because a file full of prose but no card lines reads as owning nothing —
+# silently comparing against it would mark a whole deck as unowned.
+COLL_MISSING, COLL_EMPTY, COLL_READY = "missing", "empty", "ready"
+
+
+def collection_state(out_dir: Path) -> tuple[str, Path, dict[str, int]]:
+    """(state, path, owned cards) — the one place that decides whether there is
+    a usable collection to compare decks against.
+    """
+    path = collection_path(out_dir)
+    loaded = load_collection(out_dir)
+    if loaded is None:
+        return COLL_MISSING, path, {}
+    owned = loaded[1]
+    return (COLL_READY if owned else COLL_EMPTY), path, owned
+
+
+def report_collection_state(out_dir: Path, consequence: str) -> dict[str, int]:
+    """Print the collection's state and, when it can't be used, spell out what
+    that costs and how to fix it — so a run is never silently missing the
+    ownership comparison. Returns the owned cards ({} when unusable).
+    """
+    state, path, owned = collection_state(out_dir)
+    if state == COLL_READY:
+        copies = sum(owned.values())
+        print(f"Collection: {path.name} — {len(owned)} unique cards "
+              f"({copies} copies)")
+        return owned
+    why = (f"no collection file at {path}" if state == COLL_MISSING
+           else f"{path.name} has no 'N Card Name' lines yet")
+    print(f"Collection: ⚠️  {why}")
+    print(f"           → {consequence}")
+    print("           → to fix: python mtg_deck_importer.py --collection "
+          "\"your-cards.txt\"  (or create the file by hand)")
+    return {}
+
+
 _card_info_cache: dict[str, dict] = {}
 _prints_cache_loaded = False
 _prints_cache_dirty = False
@@ -408,6 +446,70 @@ def add_deck_to_collection(out_dir: Path, deck_name: str,
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 
 
+def read_card_list(list_path: str) -> dict[str, list]:
+    """Parse any card-list file (a store/Moxfield export, a deck list, a plain
+    list) into {lowercased name: [total qty, display name]}, merging duplicate
+    rows — exports split the same card across printings, and those copies are
+    all still copies you own.
+    """
+    src = Path(list_path)
+    if not src.is_file():
+        sys.exit(f"List file not found: {src.resolve()}")
+    cards: dict[str, list] = {}
+    for line in src.read_text(encoding="utf-8-sig").splitlines():
+        parsed = parse_card_line(line)
+        if parsed:
+            qty, disp = parsed
+            entry = cards.setdefault(disp.lower(), [0, disp])
+            entry[0] += qty
+    if not cards:
+        sys.exit(f"No cards found in {src}")
+    return cards
+
+
+def create_collection(out_dir: Path, list_path: str, force: bool = False) -> None:
+    """--collection: build the collection file from a card-list export. The
+    output is deliberately plain — a short header and one 'N Card Name' per
+    line, alphabetical — so it stays easy to eyeball, diff and hand-edit. Any
+    extra structure (precon sections, value tables, notes) is yours to add
+    afterwards; the parser ignores everything that isn't a card line.
+
+    Refuses to clobber a collection that already lists cards unless forced,
+    because that file is hand-curated and not reproducible from the export.
+    """
+    cards = read_card_list(list_path)
+    path = collection_path(out_dir)
+    state, _, existing = collection_state(out_dir)
+    if state == COLL_READY and not force:
+        sys.exit(
+            f"{path.name} already lists {len(existing)} cards — not overwriting it.\n"
+            f"  • to add the new cards to it instead:  "
+            f"python mtg_deck_importer.py --merge-collection \"{list_path}\"\n"
+            f"  • to replace it wholesale (loses any notes/sections you added): "
+            f"add --force")
+    listing = "\n".join(f"{qty} {disp}"
+                        for _key, (qty, disp) in sorted(cards.items()))
+    copies = sum(qty for qty, _ in cards.values())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"""---
+tags: [mtg, collection]
+created: {date.today().isoformat()}
+---
+
+# 🗃️ My Card Collection
+
+One card per line as `N Card Name`. Only those lines are read — add headings or
+notes anywhere you like and they'll be ignored.
+
+{listing}
+""", encoding="utf-8")
+    replaced = " (replaced)" if state == COLL_READY else ""
+    print(f"Collection: wrote {path}{replaced}")
+    print(f"           {len(cards)} unique cards ({copies} copies) "
+          f"from {Path(list_path).name}")
+    print("Tip:       run --recheck to rebuild every deck's buy lists against it.")
+
+
 def merge_collection(out_dir: Path, list_path: str) -> None:
     """--merge-collection: diff a full owned-cards export against
     _Collection.md and append what's missing. Append-only — nothing is ever
@@ -415,17 +517,7 @@ def merge_collection(out_dir: Path, list_path: str) -> None:
     reported (as prose the parser ignores) for you to prune by hand.
     """
     src = Path(list_path)
-    if not src.is_file():
-        sys.exit(f"List file not found: {src.resolve()}")
-    new_cards: dict[str, list] = {}  # key -> [qty, display name]
-    for line in src.read_text(encoding="utf-8-sig").splitlines():
-        parsed = parse_card_line(line)
-        if parsed:
-            qty, disp = parsed
-            entry = new_cards.setdefault(disp.lower(), [0, disp])
-            entry[0] += qty
-    if not new_cards:
-        sys.exit(f"No cards found in {src}")
+    new_cards = read_card_list(list_path)  # key -> [qty, display name]
 
     collection = load_collection(out_dir)
     owned = collection[1] if collection else {}
@@ -485,10 +577,15 @@ def collection_value(out_dir: Path) -> None:
     a '💰 Collection Value' section (replaced in place on re-runs). Basic
     lands are excluded — the 999-copy sentinel entries would be nonsense.
     """
-    collection = load_collection(out_dir)
-    if not collection:
-        sys.exit(f"No collection file found at {collection_path(out_dir)}")
-    fname, owned = collection
+    state, path, owned = collection_state(out_dir)
+    if state != COLL_READY:
+        why = ("No collection file at" if state == COLL_MISSING
+               else "No 'N Card Name' lines yet in")
+        sys.exit(f"{why} {path}\n"
+                 "There is nothing to price without it. Create one from a card "
+                 "export with:\n"
+                 "  python mtg_deck_importer.py --collection \"your-cards.txt\"")
+    fname = path.name
     names = [n for n in owned
              if n not in BASIC_LAND_NAMES and not n.startswith("snow-covered ")]
     if not names:
@@ -1964,10 +2061,10 @@ def recheck_all(out_dir: Path) -> None:
     a price/buy refresh from the list stored in the note. Review sections are
     preserved throughout.
     """
-    collection = load_collection(out_dir)
-    if not collection:
-        sys.exit(f"No collection file found at {collection_path(out_dir)}")
-    collection_name, owned = collection
+    owned = report_collection_state(
+        out_dir, "every note is refreshed WITHOUT its 🛒 Cards to Complete "
+                 "sections (prices, galleries and deck lists still update)")
+    collection_name = collection_path(out_dir).name if owned else None
     ids = deck_id_map(out_dir)  # backfill ids so every note is addressable
     if not ids:
         sys.exit(f"No deck notes found in {out_dir}")
@@ -1985,7 +2082,7 @@ def recheck_all(out_dir: Path) -> None:
         _recheck_from_stored(did, note, collection_name, owned)
 
 
-def _recheck_from_stored(did: int, note: Path, collection_name: str,
+def _recheck_from_stored(did: int, note: Path, collection_name: str | None,
                          owned: dict[str, int]) -> None:
     """Refresh a note's prices, buy sections and Cheapest Build from the deck
     list already stored in it — no site fetching, no art re-download. The
@@ -2017,9 +2114,11 @@ def _recheck_from_stored(did: int, note: Path, collection_name: str,
 
     prices = fetch_prices([n for _, n in decklist])
     report = price_report(decklist, prices)
-    buy = buy_report(decklist, owned, prices)
+    # No usable collection → no ownership comparison; the note is rebuilt
+    # without its 🛒 Cards to Complete sections (see report_collection_state)
+    buy = buy_report(decklist, owned, prices) if collection_name else None
     choices = budget_choices(decklist, prices)
-    cheap = cheapest_buy(buy, choices, report["rates"])
+    cheap = cheapest_buy(buy, choices, report["rates"]) if buy else None
     history, alerts = record_history(note.parent, did, deck["name"], report,
                                      buy, cheap, choices)
     shape_section = render_deck_shape(deck_shape(decklist, prices))
@@ -2031,9 +2130,12 @@ def _recheck_from_stored(did: int, note: Path, collection_name: str,
                           count=1, flags=re.M)
     note.write_text(new_text, encoding="utf-8")
     update_deck_index(note.parent)
+    ownership = (f" — own {buy['owned_unique']}/{buy['unique']}"
+                 f" — to buy {len(buy['missing'])}"
+                 f" (~EUR {buy['totals']['eur']:,.2f})" if buy else
+                 " — ownership comparison skipped (no collection)")
     print(f"[{did}] {note.name}: value ~EUR {report['totals']['eur']:,.2f}"
-          f" — own {buy['owned_unique']}/{buy['unique']}"
-          f" — to buy {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f})")
+          f"{ownership}")
     for line in alerts:
         print(f"[{did}] {line}")
 
@@ -2145,10 +2247,12 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
     prices = fetch_prices([name for _, name in decklist])
     report = price_report(decklist, prices)
 
-    collection = load_collection(out_dir)
     collection_name, buy = None, None
-    if collection:
-        collection_name, owned = collection
+    owned = report_collection_state(
+        out_dir, "this note is written WITHOUT its 🛒 Cards to Complete "
+                 "sections — no owned counts, no buy list, no cost to finish")
+    if owned:
+        collection_name = collection_path(out_dir).name
         buy = buy_report(decklist, owned, prices)
 
     reviews = extract_reviews(note_path.read_text(encoding="utf-8")) \
@@ -2200,7 +2304,7 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
               f" — to buy: {len(buy['missing'])} (~EUR {buy['totals']['eur']:,.2f}"
               f" / ~EUR {cheap['totals']['eur']:,.2f} at cheapest versions)")
     else:
-        print("Owned:     no _Collection.md found — skipped the Cards to Complete sections")
+        print("Owned:     not compared — see the Collection line above")
     for line in alerts:
         print(line)
     print(f"Note:      {note_path}")
@@ -2367,6 +2471,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="price your _Collection.md (basics excluded) and write a "
              "💰 Collection Value section into it")
     parser.add_argument(
+        "--collection", metavar="FILE", dest="collection",
+        help="create the collection file from a card-list export (a plain "
+             "alphabetical 'N Card Name' list). Refuses to overwrite a "
+             "collection that already has cards unless --force is given")
+    parser.add_argument(
         "--merge-collection", metavar="FILE", dest="merge_collection",
         help="diff a full owned-cards export against _Collection.md and "
              "append what's missing (append-only; removals only reported)")
@@ -2433,6 +2542,12 @@ def main() -> None:
         if args.source:
             parser.error("--collection-value takes no other arguments.")
         collection_value(resolve_out_dir())
+        return
+    if args.collection:
+        if args.source:
+            parser.error("--collection takes the list file as its own "
+                         "argument — no deck URL/file alongside it.")
+        create_collection(resolve_out_dir(), args.collection, force=args.force)
         return
     if args.merge_collection:
         if args.source:
