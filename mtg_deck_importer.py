@@ -1664,6 +1664,24 @@ def read_deck_id(text: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _is_deck_note(text: str) -> bool:
+    """A generated deck note always carries a deck-url (its identity) and a
+    deck-id. Hand-written notes that merely share the MTG filename pattern — a
+    shopping list, a strategy scratchpad — have neither, and must never be
+    treated as decks by --list/--reindex/--delete or the index.
+    """
+    return bool(re.search(r"^deck-(url|id):", text, re.M))
+
+
+def deck_notes(out_dir: Path) -> list[Path]:
+    """Every real deck note in the vault, in filename order — the MTG-named
+    files that are actually decks (see _is_deck_note), so unrelated notes that
+    happen to match the naming pattern never leak into the deck handling.
+    """
+    return [n for n in sorted(out_dir.glob("????-??-??_MTG_*.md"))
+            if _is_deck_note(n.read_text(encoding="utf-8"))]
+
+
 def _insert_deck_id(text: str, did: int) -> str:
     """Add (or correct) the deck-id line in a note's frontmatter, right after
     deck-url so it sits with the other identity fields.
@@ -1679,7 +1697,7 @@ def deck_id_map(out_dir: Path) -> dict[int, Path]:
     note that lacks one (written into its frontmatter). Ids are sequential and
     start one past the highest already in use, so existing ids never shift.
     """
-    notes = sorted(out_dir.glob("????-??-??_MTG_*.md"))
+    notes = deck_notes(out_dir)
     ids: dict[int, Path] = {}
     missing: list[Path] = []
     for note in notes:
@@ -1755,7 +1773,7 @@ def next_deck_id(out_dir: Path) -> int:
     Does not touch existing notes (that is deck_id_map's job).
     """
     highest = 0
-    for note in out_dir.glob("????-??-??_MTG_*.md"):
+    for note in deck_notes(out_dir):
         did = read_deck_id(note.read_text(encoding="utf-8"))
         if did and did > highest:
             highest = did
@@ -1899,7 +1917,7 @@ def reindex(out_dir: Path, announce: bool = True) -> list[tuple]:
     Price history is remapped to the new ids and the index regenerated.
     Returns (old_id, new_id, note) for every deck.
     """
-    notes = list(out_dir.glob("????-??-??_MTG_*.md"))
+    notes = deck_notes(out_dir)
     if not notes:
         if announce:
             print(f"No deck notes found in {out_dir}")
