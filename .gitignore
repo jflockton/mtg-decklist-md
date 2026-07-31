@@ -7,3 +7,6 @@ manapool_prices.json
 .cache/
 *.txt
 !requirements.txt
+# Collection/deck exports — private card data, never publish
+export.md
+_Collection.md

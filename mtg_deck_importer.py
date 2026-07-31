@@ -2418,6 +2418,8 @@ def main() -> None:
         reindex(resolve_out_dir())
         return
     if args.index:
+        if args.source:
+            parser.error("--index takes no other arguments.")
         out_dir = resolve_out_dir()
         update_deck_index(out_dir)
         print(f"Updated:   {DECKS_INDEX} in {out_dir}")
