@@ -160,7 +160,7 @@ assigned the next time a command reads the notes.
 |---------|--------------|
 | `--set` | *(no argument)* Refresh **every** checklist you already have — re-prices everything, ticks anything new in your collection, keeps your ticks. The everyday command. |
 | `--set <name>` | Refresh one checklist by its name (`--set "Final Fantasy"`), reusing the set codes it was built from. |
-| `--set <preset>` | Build from a shorthand — `ff` covers all eight Final Fantasy products. |
+| `--set <preset>` | Build from a shorthand: `ff` (Final Fantasy), `marvel` (Marvel Super Heroes), `spiderman` (Marvel's Spider-Man). |
 | `--set <codes>` | Build from raw Scryfall set codes (`--set fin,fic`). See [Collecting a set](#-collecting-a-set). |
 | `--set-label <name>` | Friendly title for the note (default: the preset's name, or the set codes). |
 
@@ -323,8 +323,10 @@ Decks aren't the only thing worth tracking. `--set` builds a **long-term collect
 checklist** for one or more sets — the "own every card in this set eventually" project:
 
 ```bash
-python mtg_deck_importer.py --set ff
+python mtg_deck_importer.py --set ff          # or: marvel, spiderman
 ```
+
+Keep several on the go at once — a bare `--set` refreshes every checklist you have.
 
 ```
 Set:       Final Fantasy — 811 distinct cards

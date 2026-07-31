@@ -1416,8 +1416,14 @@ COLLECTION_NOTE_GLOB = "????-??-??_MTG-Collection_*.md"
 SET_PRESETS = {
     "ff": (["fin", "fic", "fca", "pfin", "afin", "afic", "tfin", "tfic"],
            "Final Fantasy"),
+    "marvel": (["msh", "msc", "mar", "lmar", "amsh", "fmsc", "tmsh", "tmsc"],
+               "Marvel Super Heroes"),
+    "spiderman": (["spm", "spe", "pspm", "aspm", "tspm"],
+                  "Marvel's Spider-Man"),
 }
 SET_PRESETS["finalfantasy"] = SET_PRESETS["final-fantasy"] = SET_PRESETS["ff"]
+SET_PRESETS["msh"] = SET_PRESETS["superheroes"] = SET_PRESETS["marvel"]
+SET_PRESETS["spider-man"] = SET_PRESETS["spm"] = SET_PRESETS["spiderman"]
 
 
 def collection_notes(out_dir: Path) -> list[Path]:
