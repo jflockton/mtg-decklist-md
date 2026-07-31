@@ -51,6 +51,21 @@ too. Handy for backfilling galleries into older notes cheaply — if a live
 re-fetch changes a deck's list, it flags the deck so you know to `--recheck`
 it for matching prices.
 
+**Done with a deck?** `python mtg_deck_importer.py --delete` lists every deck
+and asks which id to remove, then deletes that note and everything it owns —
+the commander art, the archived `.txt` it was imported from, its analysis
+brief and its price-history entry. `--delete <id>` skips straight to a named
+deck (it still confirms first — add `-y`/`--yes` to skip the prompt). Either
+way it **reindexes automatically afterwards** so no id gaps are left behind.
+Deletions are recoverable from your vault's Dropbox version history.
+
+**Ids drifted out of order?** `python mtg_deck_importer.py --reindex`
+renumbers every note to a gap-free, unique `1..N` `deck-id` sequence — fixing
+any id that's gone **missing or duplicated** — then remaps the price history
+and rebuilds the `_Decks.md` index to match. It runs automatically after
+`--delete`, but call it by hand any time you've deleted or reshuffled a note
+yourself.
+
 ## 🧾 Command reference
 
 ```
@@ -58,6 +73,8 @@ python mtg_deck_importer.py [--force] [--own] <source>
 python mtg_deck_importer.py --recheck [id]
 python mtg_deck_importer.py --reimport [id]
 python mtg_deck_importer.py --list
+python mtg_deck_importer.py --delete [id] [-y]
+python mtg_deck_importer.py --reindex
 python mtg_deck_importer.py --collection-value
 python mtg_deck_importer.py --brief [id]
 python mtg_deck_importer.py --index
@@ -77,6 +94,10 @@ decklist.
 | `--reimport` | *(no id)* Refresh **every** note's deck list and card art from source **without** re-pricing. Rebuilds the 🖼️ card gallery and commander art; leaves price / buy / Cheapest Build sections untouched. Falls back to the note's stored list if a source fetch fails. |
 | `--reimport <id>` | Same as above, for a single deck by id. |
 | `--list` | Print every deck's id and name, then exit. Use it to find the id for `--recheck <id>` / `--reimport <id>`. |
+| `--delete` | *(no id)* List the decks and ask which id to remove, then delete that note plus its commander art, archived `.txt`, analysis brief and price-history entry — and reindex. Recoverable from Dropbox version history. |
+| `--delete <id>` | Delete a known deck straight away (still confirms first). Same cleanup + automatic reindex. |
+| `-y`, `--yes` | Skip the confirmation prompt on `--delete`. |
+| `--reindex` | Renumber every note to a gap-free, unique `1..N` `deck-id` sequence (fixing missing/duplicate ids), remap the price history and rebuild `_Decks.md`. Runs automatically after `--delete`; use it by hand after deleting a note yourself. |
 | `--collection-value` | Price everything in `_Collection.md` (basic lands excluded) and write a **💰 Collection Value** section into it — totals per market plus a top-20 table, replaced in place on re-runs. |
 | `--index` | Regenerate the `_Decks.md` master index from the notes' current frontmatter — no network needed. (Also happens automatically after every import/recheck.) |
 | `--brief [id]` | Write a compact **analysis brief** per deck (all, or one by id) into the vault's `_analysis-briefs/` — deck shape, role groups, and oracle text for recent cards only. Input for the `/analyse-deck` Claude skill (see below). |
@@ -117,6 +138,15 @@ python mtg_deck_importer.py --reimport
 
 # Refresh art for just deck 7, no re-pricing
 python mtg_deck_importer.py --reimport 7
+
+# Delete a deck — pick it from a list, then auto-reindex
+python mtg_deck_importer.py --delete
+
+# Delete deck 7 without the prompt, then auto-reindex
+python mtg_deck_importer.py --delete 7 -y
+
+# Fix deck ids that have gone out of sequence (e.g. after a manual delete)
+python mtg_deck_importer.py --reindex
 ```
 
 ## 🌐 Supported sources

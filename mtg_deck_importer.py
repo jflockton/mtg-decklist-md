@@ -36,6 +36,19 @@ the card gallery. Price, buy and Cheapest Build sections are left untouched.
 
 `python mtg_deck_importer.py --list` prints every deck's id and name.
 
+`python mtg_deck_importer.py --delete` lists the decks and asks which one to
+remove, then deletes that note and everything it owns (commander art, the
+archived .txt it was imported from, its analysis brief and its price-history
+entry) and reindexes. `--delete <id>` deletes a known deck straight away (still
+confirms first — add `-y`/`--yes` to skip). Either way the ids are renumbered
+afterwards so no gaps are left. Deletions are recoverable from Dropbox version
+history.
+
+`python mtg_deck_importer.py --reindex` renumbers every deck note to a
+gap-free, unique 1..N `deck-id` sequence — fixing any id that is missing or
+duplicated — then remaps the price history and rebuilds the index. It runs
+automatically after `--delete`; call it by hand after deleting a note yourself.
+
 Fetches the deck list (Moxfield via a headed browser because of Cloudflare;
 EDHREC via plain HTTP), downloads the commander's artwork from Scryfall, and
 writes a markdown deck note into the Obsidian vault folder set by the
@@ -1765,6 +1778,164 @@ def list_decks(out_dir: Path) -> None:
         print(f"[{did:>3}] {name}  —  {ids[did].name}")
 
 
+def _deck_name(text: str, fallback: str) -> str:
+    m = re.search(r"^deck-name: (.+)$", text, re.M)
+    return m.group(1).strip() if m else fallback
+
+
+def _deck_files(out_dir: Path, deck_id: int, note: Path) -> list[Path]:
+    """Every on-disk artefact one deck owns: its note, the commander art, the
+    archived .txt it was imported from (only .txt imports have one) and its
+    analysis brief. The price-history entry lives inside a shared JSON file, so
+    it isn't a path here — reindex drops it once the note is gone.
+    """
+    text = note.read_text(encoding="utf-8")
+    files = [note, out_dir / "Attachments" / f"{note.stem}.jpg"]
+    url_m = re.search(r"^deck-url: (.+)$", text, re.M)
+    if url_m and url_m.group(1).strip().startswith("imports/"):
+        files.append(out_dir / url_m.group(1).strip())
+    files += sorted((out_dir / BRIEFS_DIR).glob(f"{deck_id:02d} - *.md"))
+    return [f for f in files if f.is_file()]
+
+
+def _remap_briefs(out_dir: Path, moves: list[tuple[int, int]]) -> None:
+    """Rename analysis briefs to match renumbered decks (their filename is
+    prefixed with the deck id). Best-effort — briefs are a regenerable cache,
+    so any hiccup is ignored rather than aborting the reindex.
+    """
+    briefs = out_dir / BRIEFS_DIR
+    if not briefs.is_dir():
+        return
+    for old, new in moves:
+        for src in briefs.glob(f"{old:02d} - *.md"):
+            dest = src.with_name(f"{new:02d} - {src.name.split(' - ', 1)[1]}")
+            try:
+                src.replace(dest)
+            except OSError:
+                pass
+
+
+def delete_deck(out_dir: Path, deck_id: int, assume_yes: bool = False) -> bool:
+    """Remove a single deck and everything it owns on disk. Confirms first
+    (unless --yes) with the exact file list, since this hard-deletes files.
+    Returns True if the deck was deleted. The caller reindexes afterwards so
+    the freed id number is reused and the index/history stay consistent.
+    """
+    ids = deck_id_map(out_dir)
+    note = ids.get(deck_id)
+    if note is None:
+        sys.exit(f"No deck with id {deck_id}. Run --list to see the ids.")
+    name = _deck_name(note.read_text(encoding="utf-8"), note.stem)
+    files = _deck_files(out_dir, deck_id, note)
+    print(f"About to delete deck [{deck_id}] {name}:")
+    for f in files:
+        print(f"  - {f.relative_to(out_dir)}")
+    print("  - its price-history entry")
+    print("(Recoverable from Dropbox version history if this is a mistake.)")
+    if not assume_yes:
+        try:
+            reply = input("Delete these? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply not in ("y", "yes"):
+            print("Cancelled — nothing deleted.")
+            return False
+    for f in files:
+        try:
+            f.unlink()
+        except OSError as exc:
+            print(f"           could not delete {f.name}: {exc}")
+    print(f"Deleted:   [{deck_id}] {name}")
+    return True
+
+
+def choose_deck_to_delete(out_dir: Path) -> int | None:
+    """--delete with no id: print the deck list and ask which one to remove.
+    Returns the chosen id, or None if the user cancels (blank input).
+    """
+    ids = deck_id_map(out_dir)
+    if not ids:
+        print(f"No deck notes found in {out_dir}")
+        return None
+    print("Decks:")
+    for did in sorted(ids):
+        name = _deck_name(ids[did].read_text(encoding="utf-8"), ids[did].stem)
+        print(f"  [{did:>3}] {name}")
+    try:
+        reply = input("Which deck id to delete? (blank to cancel) ").strip()
+    except EOFError:
+        reply = ""
+    if not reply:
+        print("Cancelled — nothing deleted.")
+        return None
+    if reply not in {str(d) for d in ids}:
+        sys.exit(f"No deck with id {reply!r}. Run --list to see the ids.")
+    return int(reply)
+
+
+def _remap_history(out_dir: Path, remap: dict[int, int]) -> None:
+    """Rewrite .price-history.json keys after a reindex so every deck keeps its
+    price history under its new id. Rebuilt from scratch off `remap`, so a
+    shuffle like 4→3, 5→4 can't clobber and any key with no surviving deck
+    (a just-deleted one) is dropped.
+    """
+    hist = _load_history(out_dir)
+    if not hist:
+        return
+    new_hist = {str(new): hist[str(old)]
+                for old, new in remap.items() if str(old) in hist}
+    try:
+        (out_dir / HISTORY_FILE).write_text(json.dumps(new_hist),
+                                            encoding="utf-8")
+    except OSError:
+        pass
+
+
+def reindex(out_dir: Path, announce: bool = True) -> list[tuple]:
+    """Renumber every deck note to a gap-free, unique 1..N deck-id sequence,
+    fixing any missing or duplicated ids. Order is preserved by existing id
+    (notes lacking one sort last) with the filename as a stable tie-breaker, so
+    duplicates resolve deterministically and a normal run only closes gaps.
+    Price history is remapped to the new ids and the index regenerated.
+    Returns (old_id, new_id, note) for every deck.
+    """
+    notes = list(out_dir.glob("????-??-??_MTG_*.md"))
+    if not notes:
+        if announce:
+            print(f"No deck notes found in {out_dir}")
+        return []
+    entries = []
+    for note in notes:
+        text = note.read_text(encoding="utf-8")
+        entries.append((note, text, read_deck_id(text)))
+    entries.sort(key=lambda e: (e[2] if e[2] is not None else float("inf"),
+                                e[0].name))
+    counts: dict[int, int] = {}
+    for _note, _text, old in entries:
+        if old is not None:
+            counts[old] = counts.get(old, 0) + 1
+    remap: dict[int, int] = {}
+    changes = []
+    for new_id, (note, text, old) in enumerate(entries, start=1):
+        if old != new_id:
+            note.write_text(_insert_deck_id(text, new_id), encoding="utf-8")
+        changes.append((old, new_id, note))
+        if old is not None and counts[old] == 1:
+            remap[old] = new_id
+    _remap_history(out_dir, remap)
+    _remap_briefs(out_dir, [(o, n) for o, n in remap.items() if o != n])
+    update_deck_index(out_dir)
+    if announce:
+        moved = [(o, n, note) for o, n, note in changes if o != n]
+        if moved:
+            print(f"Reindex:   renumbered {len(moved)} of {len(changes)} deck(s)")
+            for o, n, note in moved:
+                print(f"           {o if o is not None else '—'} → {n}  {note.name}")
+        else:
+            print(f"Reindex:   all {len(changes)} deck id(s) already sequential")
+    return changes
+
+
 def recheck_all(out_dir: Path) -> None:
     """Refresh every deck note by re-importing it from its original source —
     a Moxfield/EDHREC URL or the archived .txt in the vault's imports/ folder
@@ -2148,6 +2319,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--list", action="store_true", dest="list_ids",
         help="list every deck's id and name, then exit")
     parser.add_argument(
+        "--delete", nargs="?", const="__ask__", default=None, metavar="ID",
+        help="delete a deck and everything it owns (note, art, archived .txt, "
+             "brief, price history). No ID: list decks and ask which. Always "
+             "reindexes afterwards so ids stay gap-free")
+    parser.add_argument(
+        "--reindex", action="store_true",
+        help="renumber every deck note to a gap-free, unique 1..N deck-id "
+             "sequence (fixing missing/duplicate ids), remap price history and "
+             "rebuild the index; runs automatically after --delete")
+    parser.add_argument(
+        "-y", "--yes", action="store_true",
+        help="skip the confirmation prompt on --delete")
+    parser.add_argument(
         "--collection-value", action="store_true", dest="collection_value",
         help="price your _Collection.md (basics excluded) and write a "
              "💰 Collection Value section into it")
@@ -2171,19 +2355,41 @@ def _parse_id(val: str) -> int:
         return int(val)
     except ValueError:
         if "://" in val or val.lower().endswith(".txt"):
-            sys.exit(f"--recheck/--reimport take a deck id, not a source.\n"
-                     f"To re-import that deck from its source run:\n"
+            sys.exit(f"That option takes a deck id, not a source.\n"
+                     f"To (re-)import that deck from its source run:\n"
                      f"  python mtg_deck_importer.py --force \"{val}\"\n"
-                     "or find its id with --list and use --recheck <id>.")
+                     "or find its id with --list and pass the number instead.")
         sys.exit(f"Deck id must be a number, got {val!r} — run --list to see ids.")
 
 
 def main() -> None:
+    # The console output (and --help) is emoji-heavy; force stdout to UTF-8 so
+    # a legacy Windows code page (cp1252) degrades to '?' instead of crashing a
+    # print mid-run.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     parser = build_arg_parser()
     args = parser.parse_args()
 
     if args.list_ids:
         list_decks(resolve_out_dir())
+        return
+    if args.delete is not None:
+        if args.source:
+            parser.error("--delete takes an optional deck id, not a URL/file.")
+        out_dir = resolve_out_dir()
+        target = (choose_deck_to_delete(out_dir) if args.delete == "__ask__"
+                  else _parse_id(args.delete))
+        if target is not None and delete_deck(out_dir, target, args.yes):
+            reindex(out_dir)
+        return
+    if args.reindex:
+        if args.source:
+            parser.error("--reindex takes no other arguments.")
+        reindex(resolve_out_dir())
         return
     if args.index:
         out_dir = resolve_out_dir()
