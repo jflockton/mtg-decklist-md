@@ -102,14 +102,61 @@ ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
 NAME_DECORATIONS = re.compile(r"\s*(\*[A-Za-z]\*|\([A-Z0-9]{2,6}\)\s*[\w-]*)\s*$")
 
 
-def parse_card_line(line: str) -> tuple[int, str] | None:
+# A foil is the same printing on shiny stock, so it shares a collector number
+# and needs its own marker. ✨ is the friendly one to type; *F* is what Moxfield
+# and most exports emit. Both are accepted, anywhere on the line.
+FOIL_MARKER = re.compile(r"\s*(?:\*[A-Za-z]\*|✨)\s*")
+SET_SUFFIX = re.compile(r"\s*\(([A-Za-z0-9]{2,6})\)\s*([\w-]*)\s*$")
+
+
+def parse_card_line_full(
+        line: str) -> tuple[int, str, str | None, str | None, bool] | None:
+    """(quantity, name, set code, collector number, is foil) from a card line.
+
+    The set/number suffix — `1 Island (FIN) 298` — pins the exact printing, and
+    ✨ (or *F*) marks it as the foil of that printing. Deck matching ignores
+    both, since any Island plays the same; collection value and set checklists
+    need them, because a foil is worth several times its non-foil twin.
+    """
     line = line.strip()
     if not line:
         return None
     m = re.match(r"(\d+)[xX]?\s+(.+)", line)
-    qty, name = (int(m.group(1)), m.group(2)) if m else (1, line)
-    name = NAME_DECORATIONS.sub("", name).strip()
-    return (qty, name) if name else None
+    qty, rest = (int(m.group(1)), m.group(2)) if m else (1, line)
+    foil = bool(FOIL_MARKER.search(rest))
+    rest = FOIL_MARKER.sub(" ", rest).strip()
+    set_code = number = None
+    s = SET_SUFFIX.search(rest)
+    if s:
+        set_code = s.group(1).lower()
+        number = (s.group(2) or "").strip() or None
+        rest = rest[:s.start()].strip()
+    return (qty, rest, set_code, number, foil) if rest else None
+
+
+def read_collection_entries(path: Path) -> list[dict]:
+    """Every card line in a collection file, keeping the detail the name-only
+    view throws away: which printing, and whether it's foil.
+    """
+    entries: list[dict] = []
+    if not path.is_file():
+        return entries
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        if not re.match(r"\d", line.strip()):
+            continue
+        p = parse_card_line_full(line)
+        if p:
+            entries.append({"qty": p[0], "name": p[1], "set": p[2],
+                            "num": p[3], "foil": p[4]})
+    return entries
+
+
+def parse_card_line(line: str) -> tuple[int, str] | None:
+    """(quantity, name) — the printing-agnostic view used everywhere a card is
+    just a card (deck lists, ownership counts, price lookups).
+    """
+    parsed = parse_card_line_full(line)
+    return (parsed[0], parsed[1]) if parsed else None
 
 
 def load_collection(out_dir: Path) -> tuple[str, dict[str, int]] | None:
@@ -590,26 +637,46 @@ def collection_value(out_dir: Path) -> None:
              if n not in BASIC_LAND_NAMES and not n.startswith("snow-covered ")]
     if not names:
         sys.exit("The collection has no non-basic cards to price.")
-    print(f"Pricing:   {len(names)} unique cards from {fname}...")
+    # Price the cards you actually own: the exact printing where the line names
+    # one, and the foil price where it's marked ✨ — a foil is often several
+    # times its non-foil twin, so pricing everything non-foil undervalues a
+    # collection badly.
+    entries = [e for e in read_collection_entries(path)
+               if e["name"].lower() not in BASIC_LAND_NAMES
+               and not e["name"].lower().startswith("snow-covered ")]
+    pinned = [e for e in entries if e["set"] and e["num"]]
+    print(f"Pricing:   {len(names)} unique cards from {fname}"
+          f" ({len(pinned)} pinned to an exact printing,"
+          f" {sum(1 for e in entries if e['foil'])} foil)...")
     prices = fetch_prices(names)
+    exact = fetch_printing_prices(pinned)
     rates = fx_rates()
 
     totals = {"eur": 0.0, "usd": 0.0, "mp": 0.0}
     rows = []
     unpriced = []
     copies = 0
-    for n in names:
-        qty = owned[n]
-        p = prices.get(n) or {}
-        disp = p.get("name", n.title())
-        if p.get("eur") is None and p.get("usd") is None:
+    for e in entries:
+        qty, key = e["qty"], e["name"].lower()
+        p = exact.get((e["set"], e["num"])) if e["set"] and e["num"] else None
+        p = p or prices.get(key) or {}
+        disp = p.get("name", e["name"])
+        suffix = "eur_foil" if e["foil"] else "eur"
+        eur = p.get(suffix) if e["foil"] else p.get("eur")
+        usd = p.get("usd_foil" if e["foil"] else "usd")
+        if eur is None and usd is None:  # no foil price listed → fall back
+            eur, usd = p.get("eur"), p.get("usd")
+        if eur is None and usd is None:
             unpriced.append(disp)
             continue
         copies += qty
-        for src in ("eur", "usd", "mp"):
-            if p.get(src) is not None:
-                totals[src] += p[src] * qty
-        rows.append((qty, disp, p.get("eur"), p.get("mp")))
+        if eur is not None:
+            totals["eur"] += eur * qty
+        if usd is not None:
+            totals["usd"] += usd * qty
+        if p.get("mp") is not None:
+            totals["mp"] += p["mp"] * qty
+        rows.append((qty, disp + (" ✨" if e["foil"] else ""), eur, p.get("mp")))
     rows.sort(key=lambda r: (r[2] or 0) * r[0], reverse=True)
 
     today = date.today().isoformat()
@@ -876,6 +943,35 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
                 "img": cheap.get("img") or (entry or {}).get("img"),
             }
     return prices
+
+
+def fetch_printing_prices(entries: list[dict]) -> dict[tuple[str, str], dict]:
+    """Prices for exact printings, keyed (set code, collector number).
+
+    Scryfall's collection endpoint takes set/collector-number identifiers, so a
+    whole shelf of pinned cards costs one request per 75 — far better than a
+    lookup each. Foil prices come back in the same payload.
+    """
+    out: dict[tuple[str, str], dict] = {}
+    want = sorted({(e["set"], e["num"]) for e in entries})
+    for i in range(0, len(want), 75):
+        chunk = want[i:i + 75]
+        r = http("POST", SCRYFALL_COLLECTION,
+                 json={"identifiers": [{"set": s, "collector_number": n}
+                                       for s, n in chunk]})
+        if r.status_code != 200:
+            continue  # fall back to the by-name prices for this chunk
+        for card in r.json().get("data", []):
+            p = card.get("prices", {})
+            out[(card["set"].lower(), str(card["collector_number"]))] = {
+                "name": card["name"],
+                "eur": float(p["eur"]) if p.get("eur") else None,
+                "usd": float(p["usd"]) if p.get("usd") else None,
+                "eur_foil": float(p["eur_foil"]) if p.get("eur_foil") else None,
+                "usd_foil": float(p["usd_foil"]) if p.get("usd_foil") else None,
+                "mp": manapool_index().get(card["name"].lower()),
+            }
+    return out
 
 
 def fetch_card_images(names: list[str]) -> dict[str, str | None]:
@@ -1313,9 +1409,6 @@ def render_deck_shape(shape: dict) -> str:
 # premium set runs to five figures, which isn't a collection, it's a mortgage.
 # ---------------------------------------------------------------------------
 
-SET_SECTION_ORDER = ["Mythic", "Rare", "Uncommon", "Common", "Special", "Bonus",
-                     "Through the Ages", "Art Series", "Tokens"]
-
 COLLECTION_NOTE_GLOB = "????-??-??_MTG-Collection_*.md"
 
 # Shorthands for "the whole of product X", because nobody should have to retype
@@ -1364,28 +1457,59 @@ def resolve_set_target(out_dir: Path, arg: str) -> tuple[list[str], str | None]:
     return [c.strip().lower() for c in arg.split(",") if c.strip()], None
 
 
-def _set_section(card: dict) -> str:
-    """Which block of the checklist a card belongs in. Rarity is the natural
-    axis for collecting (you chase mythics and bulk out commons), with the
-    oddities that have no meaningful rarity split out on their own.
-    """
-    if card["layout"] == "art_series":
-        return "Art Series"
-    if "token" in card["layout"] or card["layout"] == "emblem":
-        return "Tokens"
-    if card["set_type"] == "masterpiece":
-        return "Through the Ages"
-    return card["rarity"].title()
+PRODUCT_ORDER = ["fin", "fic", "fca", "pfin", "afin", "afic", "tfin", "tfic",
+                 "msh", "msc", "mar"]
+
+# Treatment blocks, in the order a collector thinks about them: the base set
+# first, then the fancy pulls. Within a block cards run in collector-number
+# order, which is how a binder is laid out — scan a card, read its number, go
+# straight to the slot.
+TREATMENT_ORDER = ["Regular", "Showcase", "Borderless", "Full-art",
+                   "Extended-art", "Etched", "Promo", "Token", "Art card"]
 
 
-def fetch_set_cards(codes: list[str]) -> list[dict]:
-    """Every distinct card across the given set codes, each at its cheapest
-    paper printing. Deduped on oracle_id so a card reprinted as a promo (or
-    appearing in both the main set and its Commander decks) is one target.
+def _treatment(c: dict) -> str:
+    """Which block a printing belongs in — how the card actually looks, which
+    is what tells two copies of the same card apart in a binder.
     """
-    best: dict[str, dict] = {}
+    layout = c.get("layout", "normal")
+    if "token" in layout or layout == "emblem":
+        return "Token"
+    if layout == "art_series":
+        return "Art card"
+    fx = set(c.get("frame_effects") or [])
+    if c.get("full_art"):
+        return "Full-art"
+    if "extendedart" in fx:
+        return "Extended-art"
+    if "etched" in fx:
+        return "Etched"
+    if "inverted" in fx:
+        return "Showcase"
+    if c.get("border_color") == "borderless":
+        return "Borderless"
+    if c.get("promo"):
+        return "Promo"
+    return "Regular"
+
+
+def _num_key(num: str):
+    """Sort collector numbers naturally: 2 before 10, and 551a before 551b."""
+    m = re.match(r"(\d+)(.*)", str(num))
+    return (int(m.group(1)), m.group(2)) if m else (10 ** 9, str(num))
+
+
+def fetch_set_printings(codes: list[str]) -> list[dict]:
+    """Every individual PRINTING across the given sets — one entry per physical
+    card you could slot into a binder, each with its own set/collector-number id.
+
+    Foil and non-foil are NOT split: they share a collector number, so they are
+    the same slot. Only a genuinely different printing (different art, border or
+    frame) earns its own line.
+    """
+    out: list[dict] = []
     for code in codes:
-        page, url = 1, SCRYFALL_SEARCH
+        url: str | None = SCRYFALL_SEARCH
         params: dict | None = {"q": f"set:{code}", "unique": "prints",
                                "include_extras": "true",
                                "include_variations": "true"}
@@ -1398,153 +1522,192 @@ def fetch_set_cards(codes: list[str]) -> list[dict]:
             r.raise_for_status()
             data = r.json()
             for c in data.get("data", []):
-                found += 1
-                # Arena-only rebalanced cards ("A-Vivi Ornitier") and other
-                # digital printings can never be owned in paper, so they have no
-                # business on a physical collection checklist.
                 if "paper" not in (c.get("games") or ["paper"]):
                     continue
-                gbp = _card_gbp(
-                    float(c["prices"]["eur"]) if c["prices"].get("eur") else None,
-                    float(c["prices"]["usd"]) if c["prices"].get("usd") else None,
-                    fx_rates())
-                key = c.get("oracle_id") or f"{c['set']}:{c['name']}"
-                cur = best.get(key)
-                if cur is None or (gbp is not None
-                                   and (cur["gbp"] is None or gbp < cur["gbp"])):
-                    # Art-series and some token cards are double-faced with the
-                    # same name twice ("Chocobo Camp // Chocobo Camp") — show it once
-                    disp = c["name"]
-                    if " // " in disp:
-                        faces = [f.strip() for f in disp.split(" // ")]
-                        if len(set(faces)) == 1:
-                            disp = faces[0]
-                    best[key] = {
-                        "name": disp, "rarity": c.get("rarity", "common"),
-                        "layout": c.get("layout", "normal"),
-                        "set_type": c.get("set_type", ""), "set": c["set"],
-                        "num": c.get("collector_number", ""),
-                        "legendary": "Legendary" in (c.get("type_line") or ""),
-                        "gbp": gbp,
-                    }
+                found += 1
+                disp = c["name"]
+                if " // " in disp:
+                    faces = [f.strip() for f in disp.split(" // ")]
+                    if len(set(faces)) == 1:
+                        disp = faces[0]
+                p = c.get("prices", {})
+                out.append({
+                    "name": disp,
+                    "set": c["set"].lower(),
+                    "num": str(c.get("collector_number", "")),
+                    "treatment": _treatment(c),
+                    "rarity": c.get("rarity", "common"),
+                    "foil_only": c.get("finishes") == ["foil"],
+                    "gbp": _card_gbp(
+                        float(p["eur"]) if p.get("eur") else None,
+                        float(p["usd"]) if p.get("usd") else None, fx_rates()),
+                })
             url, params = data.get("next_page"), None
-            page += 1
         if found:
-            print(f"Set:       {code} — {found} printings scanned")
-    return sorted(best.values(), key=lambda c: (c["name"].lower()))
+            print(f"Set:       {code} — {found} printings")
+    return out
 
 
-TICK_RE = re.compile(r"^- \[([ xX])\] (?:⭐ |✅ )*(.+?)(?: — |$)")
+TICK_RE = re.compile(r"^- \[([ xX])\]\s+`([A-Z0-9]+ [\w-]+)`")
 
 
-def _existing_ticks(note: Path) -> set[tuple[str, str]]:
-    """(section, card name) for every already-ticked box, so re-running --set
-    re-prices the list without wiping years of progress. Keyed by section too
-    because an Art Series card shares its name with the card it depicts.
+def _existing_ticks(note: Path) -> set[str]:
+    """Every already-ticked printing id, so a refresh re-prices the list without
+    wiping progress. Keyed on the id alone — it is globally unique, so no
+    section tracking is needed and reorganising the blocks can never orphan a
+    tick.
     """
     if not note.is_file():
         return set()
-    ticked: set[tuple[str, str]] = set()
-    section = ""
+    ticked = set()
     for line in note.read_text(encoding="utf-8").splitlines():
-        head = re.match(r"^### .*?([\w' ]+) —", line) or re.match(r"^### (.+)$", line)
-        if head:
-            section = head.group(1).strip()
-            continue
         m = TICK_RE.match(line.strip())
         if m and m.group(1).lower() == "x":
-            ticked.add((section, m.group(2).strip()))
+            ticked.add(m.group(2).upper())
     return ticked
 
 
-def set_collection(out_dir: Path, codes: list[str], label: str | None = None) -> None:
-    """--set: build or refresh a set-collection checklist note. A ticked box
-    means "I have this card", from either source: a tick you made by hand, or
-    your collection file already listing it. Both survive a refresh.
+def set_collection(out_dir: Path, codes: list[str], label: str | None = None,
+                   reset: bool = False) -> None:
+    """--set: build or refresh a printing-by-printing collection checklist.
+
+    One line per printing, grouped by product then treatment and ordered by
+    collector number, so a card in your hand maps to exactly one line. A ticked
+    box means you have that printing; ticks come from your collection file
+    (where it records the id) or from you, and survive every refresh.
     """
-    cards = fetch_set_cards(codes)
-    if not cards:
+    printings = fetch_set_printings(codes)
+    if not printings:
         sys.exit(f"No cards found for: {', '.join(codes)}")
     name = label or ", ".join(c.upper() for c in codes)
     safe = ILLEGAL_FILENAME_CHARS.sub("", name)
     note = out_dir / f"{date.today().isoformat()}_MTG-Collection_{safe}.md"
-    # An older run may have used a different date in the filename — keep using it
     for prior in sorted(out_dir.glob(f"????-??-??_MTG-Collection_{safe}.md")):
         note = prior
         break
-    ticked = _existing_ticks(note)
-    _, _, owned = collection_state(out_dir)
+    ticked = set() if reset else _existing_ticks(note)
 
-    groups: dict[str, list[dict]] = {}
-    for c in cards:
-        groups.setdefault(_set_section(c), []).append(c)
+    _, coll_path, _owned = collection_state(out_dir)
+    owned_ids: set[tuple[str, str]] = set()
+    owned_names: set[str] = set()
+    owned_foil: set[tuple[str, str]] = set()
+    for e in read_collection_entries(coll_path):
+        if e["set"] and e["num"]:
+            owned_ids.add((e["set"], e["num"]))
+            if e["foil"]:
+                owned_foil.add((e["set"], e["num"]))
+        owned_names.add(e["name"].lower())
 
-    # Since a line is one CARD (any printing counts), owning it by name in the
-    # collection file simply means you have it — so tick the box rather than
-    # decorating it and leaving the reader to reconcile the two.
-    from_collection = 0
-    for c in cards:
-        key = (_set_section(c), c["name"])
-        if key in ticked:
+    # A bare name can only identify a printing when the card has exactly one
+    # printing across these sets — otherwise "Sol Ring" could be any of four arts.
+    name_counts: dict[str, int] = {}
+    for pr in printings:
+        key = pr["name"].lower()
+        name_counts[key] = name_counts.get(key, 0) + 1
+
+    by_id = by_name = 0
+    for pr in printings:
+        pid = f"{pr['set'].upper()} {pr['num']}"
+        if pid in ticked:
             continue
-        if (c["name"].lower() in owned
-                or c["name"].split(" // ")[0].strip().lower() in owned):
-            ticked.add(key)
-            from_collection += 1
+        if (pr["set"], pr["num"]) in owned_ids:
+            ticked.add(pid)
+            by_id += 1
+        elif name_counts[pr["name"].lower()] == 1 and pr["name"].lower() in owned_names:
+            ticked.add(pid)
+            by_name += 1
+    needs_id = sum(1 for n, cnt in name_counts.items()
+                   if cnt > 1 and n in owned_names)
 
-    done = sum(1 for c in cards
-               if (_set_section(c), c["name"]) in ticked)
-    total_cost = sum(c["gbp"] or 0 for c in cards)
-    left_cost = sum(c["gbp"] or 0 for c in cards
-                    if (_set_section(c), c["name"]) not in ticked)
-    legendary = sum(1 for c in cards if c["legendary"])
-    pct = 100 * done / len(cards) if cards else 0
+    def pid_of(x):
+        return f"{x['set'].upper()} {x['num']}"
+
+    done = sum(1 for pr in printings if pid_of(pr) in ticked)
+    total_cost = sum(pr["gbp"] or 0 for pr in printings)
+    left_cost = sum(pr["gbp"] or 0 for pr in printings if pid_of(pr) not in ticked)
+    distinct = len({pr["name"] for pr in printings})
+    pct = 100 * done / len(printings)
     bar = "█" * round(pct / 5) + "░" * (20 - round(pct / 5))
 
-    blocks, summary = [], []
-    for sec in SET_SECTION_ORDER + [g for g in groups if g not in SET_SECTION_ORDER]:
-        items = groups.get(sec)
-        if not items:
-            continue
-        s_done = sum(1 for c in items if (sec, c["name"]) in ticked)
-        s_cost = sum(c["gbp"] or 0 for c in items
-                     if (sec, c["name"]) not in ticked)
-        summary.append(f"| {sec} | {s_done}/{len(items)} | £{s_cost:,.2f} |")
-        lines = []
-        for c in items:
-            mark = "x" if (sec, c["name"]) in ticked else " "
-            flags = "⭐ " if c["legendary"] else ""
-            price = f"£{c['gbp']:,.2f}" if c["gbp"] is not None else "—"
-            lines.append(f"- [{mark}] {flags}{c['name']} — {price}")
-        blocks.append(f"### {sec} — {s_done}/{len(items)} · £{s_cost:,.2f} to go\n\n"
-                      + "\n".join(lines))
+    groups: dict[str, dict[str, list]] = {}
+    for pr in printings:
+        groups.setdefault(pr["set"], {}).setdefault(pr["treatment"], []).append(pr)
 
+    prods = sorted(groups, key=lambda s: (PRODUCT_ORDER.index(s)
+                                          if s in PRODUCT_ORDER else 99, s))
+    blocks, summary = [], []
+    for prod in prods:
+        tre = groups[prod]
+        p_items = [x for v in tre.values() for x in v]
+        p_done = sum(1 for x in p_items if pid_of(x) in ticked)
+        p_cost = sum(x["gbp"] or 0 for x in p_items if pid_of(x) not in ticked)
+        summary.append(f"| **{prod.upper()}** | **{p_done}/{len(p_items)}** | "
+                       f"**£{p_cost:,.2f}** |")
+        blocks.append(f"## {prod.upper()} — {p_done}/{len(p_items)} "
+                      f"· £{p_cost:,.2f} to go")
+        for t in TREATMENT_ORDER + [k for k in tre if k not in TREATMENT_ORDER]:
+            items = tre.get(t)
+            if not items:
+                continue
+            items.sort(key=lambda x: _num_key(x["num"]))
+            t_done = sum(1 for x in items if pid_of(x) in ticked)
+            t_cost = sum(x["gbp"] or 0 for x in items if pid_of(x) not in ticked)
+            summary.append(f"| &emsp;{t} | {t_done}/{len(items)} | "
+                           f"£{t_cost:,.2f} |")
+            lines = []
+            for x in items:
+                mark = "x" if pid_of(x) in ticked else " "
+                price = f"£{x['gbp']:,.2f}" if x["gbp"] is not None else "—"
+                if (x["set"], x["num"]) in owned_foil:
+                    tag = " ✨"          # you have this one in foil
+                elif x["foil_only"]:
+                    tag = " *(foil only)*"
+                else:
+                    tag = ""
+                lines.append(f"- [{mark}] `{pid_of(x)}` {x['name']}{tag} — {price}")
+            body = "\n".join(lines)
+            blocks.append(f"### {t} — {t_done}/{len(items)} "
+                          f"· £{t_cost:,.2f} to go\n\n{body}")
+
+    hand = done - by_id - by_name
+    warn = (f" ⚠️ {needs_id} cards are in your collection by name but have several "
+            f"printings here — they need an id before they can count."
+            if needs_id else "")
+    summary_rows = "\n".join(summary)
+    block_body = "\n\n".join(blocks)
     note.write_text(f"""---
 tags: [mtg, collection, set-target]
 updated: {date.today().isoformat()}
 set-codes: {", ".join(codes)}
-cards-total: {len(cards)}
-cards-owned: {done}
+printings-total: {len(printings)}
+printings-owned: {done}
+distinct-cards: {distinct}
 cost-remaining-gbp: {left_cost:.2f}
 ---
 
 # 🎯 {name} — collection target
 
-`{bar}` **{done}/{len(cards)}** ({pct:.0f}%) · **£{left_cost:,.2f}** still to buy of £{total_cost:,.2f}
+`{bar}` **{done}/{len(printings)}** printings ({pct:.0f}%) · **£{left_cost:,.2f}** still to buy of £{total_cost:,.2f}
 
-One line per card at its cheapest printing. **A ticked box means you have it** — tick one as each card arrives and the counts update on the next `--set` run. ⭐ = legendary ({legendary} of them).
+Every printing has its own line, because a different art is a different card to own — {len(printings)} printings across {distinct} distinct cards. Foil and non-foil share a line: they share a collector number, so they're the same slot. Lines marked *(foil only)* exist in no other finish.
 
-{from_collection} of the ticks below came from `_Collection.md` already listing the card; the rest are yours. Ticks are never removed by a refresh, so if a card isn't in your collection file you can still tick it here and it will stick.
+**To tick a box:** record the card in `_Collection.md` with its id — `1 Sol Ring (FIC) 357` — and the matching box ticks itself on the next `--set`. Or tick it here by hand; ticks are never removed by a refresh.
 
-| Section | Have | Left to buy |
+**Ticked: {by_id} by id · {by_name} by name (single-printing cards) · {hand} by hand.**{warn}
+
+| Product | Have | Left to buy |
 |---------|-----:|------------:|
-{chr(10).join(summary)}
+{summary_rows}
 
-{chr(10).join(f"{b}{chr(10)}" for b in blocks)}""", encoding="utf-8")
+{block_body}
+""", encoding="utf-8")
 
-    print(f"Set:       {name} — {len(cards)} distinct cards")
-    print(f"Progress:  {done}/{len(cards)} ticked ({pct:.0f}%)"
+    print(f"Set:       {name} — {len(printings)} printings "
+          f"({distinct} distinct cards)")
+    print(f"Progress:  {done}/{len(printings)} ticked ({pct:.0f}%)"
           f" — £{left_cost:,.2f} of £{total_cost:,.2f} still to buy")
+    print(f"           {by_id} by id, {by_name} by name, {hand} by hand"
+          + (f", {needs_id} need an id" if needs_id else ""))
     print(f"Note:      {note}")
 
 
@@ -2785,6 +2948,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--set-label", metavar="NAME", dest="set_label",
         help="friendly name for the --set note (default: the set codes)")
     parser.add_argument(
+        "--set-reset", action="store_true", dest="set_reset",
+        help="with --set: discard existing ticks and rederive them from the "
+             "collection file (use after correcting how ownership is matched)")
+    parser.add_argument(
         "--collection", metavar="FILE", dest="collection",
         help="create the collection file from a card-list export (a plain "
              "alphabetical 'N Card Name' list). Refuses to overwrite a "
@@ -2875,12 +3042,14 @@ def main() -> None:
                 if not codes:
                     print(f"Skipped:   {note.name} has no set-codes: line")
                     continue
-                set_collection(out_dir, codes, args.set_label or _note_label(note))
+                set_collection(out_dir, codes, args.set_label or _note_label(note),
+                               reset=args.set_reset)
             return
         codes, label = resolve_set_target(out_dir, args.set_codes)
         if not codes:
             parser.error("--set needs a checklist name, a preset, or set codes.")
-        set_collection(out_dir, codes, args.set_label or label)
+        set_collection(out_dir, codes, args.set_label or label,
+                       reset=args.set_reset)
         return
     if args.collection:
         if args.source:
