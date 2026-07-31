@@ -1301,6 +1301,193 @@ def render_deck_shape(shape: dict) -> str:
 {checks}"""
 
 
+# ---------------------------------------------------------------------------
+# Set collection tracker (--set) — collecting a whole set, one card at a time
+#
+# This is deliberately NOT a deck: no commander, no curve, no bracket. It is a
+# long-lived checklist, so the note stores progress as Obsidian checkboxes and
+# a refresh preserves every tick while re-pricing everything around them.
+#
+# One line per distinct card (cheapest printing anywhere in the chosen sets),
+# not one per printing: collecting every borderless/showcase/foil variant of a
+# premium set runs to five figures, which isn't a collection, it's a mortgage.
+# ---------------------------------------------------------------------------
+
+SET_SECTION_ORDER = ["Mythic", "Rare", "Uncommon", "Common", "Special", "Bonus",
+                     "Through the Ages", "Art Series", "Tokens"]
+
+
+def _set_section(card: dict) -> str:
+    """Which block of the checklist a card belongs in. Rarity is the natural
+    axis for collecting (you chase mythics and bulk out commons), with the
+    oddities that have no meaningful rarity split out on their own.
+    """
+    if card["layout"] == "art_series":
+        return "Art Series"
+    if "token" in card["layout"] or card["layout"] == "emblem":
+        return "Tokens"
+    if card["set_type"] == "masterpiece":
+        return "Through the Ages"
+    return card["rarity"].title()
+
+
+def fetch_set_cards(codes: list[str]) -> list[dict]:
+    """Every distinct card across the given set codes, each at its cheapest
+    paper printing. Deduped on oracle_id so a card reprinted as a promo (or
+    appearing in both the main set and its Commander decks) is one target.
+    """
+    best: dict[str, dict] = {}
+    for code in codes:
+        page, url = 1, SCRYFALL_SEARCH
+        params: dict | None = {"q": f"set:{code}", "unique": "prints",
+                               "include_extras": "true",
+                               "include_variations": "true"}
+        found = 0
+        while url:
+            r = http("GET", url, params=params)
+            if r.status_code == 404:
+                print(f"Set:       '{code}' has no cards on Scryfall — skipped")
+                break
+            r.raise_for_status()
+            data = r.json()
+            for c in data.get("data", []):
+                found += 1
+                # Arena-only rebalanced cards ("A-Vivi Ornitier") and other
+                # digital printings can never be owned in paper, so they have no
+                # business on a physical collection checklist.
+                if "paper" not in (c.get("games") or ["paper"]):
+                    continue
+                gbp = _card_gbp(
+                    float(c["prices"]["eur"]) if c["prices"].get("eur") else None,
+                    float(c["prices"]["usd"]) if c["prices"].get("usd") else None,
+                    fx_rates())
+                key = c.get("oracle_id") or f"{c['set']}:{c['name']}"
+                cur = best.get(key)
+                if cur is None or (gbp is not None
+                                   and (cur["gbp"] is None or gbp < cur["gbp"])):
+                    # Art-series and some token cards are double-faced with the
+                    # same name twice ("Chocobo Camp // Chocobo Camp") — show it once
+                    disp = c["name"]
+                    if " // " in disp:
+                        faces = [f.strip() for f in disp.split(" // ")]
+                        if len(set(faces)) == 1:
+                            disp = faces[0]
+                    best[key] = {
+                        "name": disp, "rarity": c.get("rarity", "common"),
+                        "layout": c.get("layout", "normal"),
+                        "set_type": c.get("set_type", ""), "set": c["set"],
+                        "num": c.get("collector_number", ""),
+                        "legendary": "Legendary" in (c.get("type_line") or ""),
+                        "gbp": gbp,
+                    }
+            url, params = data.get("next_page"), None
+            page += 1
+        if found:
+            print(f"Set:       {code} — {found} printings scanned")
+    return sorted(best.values(), key=lambda c: (c["name"].lower()))
+
+
+TICK_RE = re.compile(r"^- \[([ xX])\] (?:⭐ |✅ )*(.+?)(?: — |$)")
+
+
+def _existing_ticks(note: Path) -> set[tuple[str, str]]:
+    """(section, card name) for every already-ticked box, so re-running --set
+    re-prices the list without wiping years of progress. Keyed by section too
+    because an Art Series card shares its name with the card it depicts.
+    """
+    if not note.is_file():
+        return set()
+    ticked: set[tuple[str, str]] = set()
+    section = ""
+    for line in note.read_text(encoding="utf-8").splitlines():
+        head = re.match(r"^### .*?([\w' ]+) —", line) or re.match(r"^### (.+)$", line)
+        if head:
+            section = head.group(1).strip()
+            continue
+        m = TICK_RE.match(line.strip())
+        if m and m.group(1).lower() == "x":
+            ticked.add((section, m.group(2).strip()))
+    return ticked
+
+
+def set_collection(out_dir: Path, codes: list[str], label: str | None = None) -> None:
+    """--set: build or refresh a set-collection checklist note. Ticks survive,
+    prices refresh, and cards you already own by name are flagged so progress
+    doesn't start from zero.
+    """
+    cards = fetch_set_cards(codes)
+    if not cards:
+        sys.exit(f"No cards found for: {', '.join(codes)}")
+    name = label or ", ".join(c.upper() for c in codes)
+    safe = ILLEGAL_FILENAME_CHARS.sub("", name)
+    note = out_dir / f"{date.today().isoformat()}_MTG-Collection_{safe}.md"
+    # An older run may have used a different date in the filename — keep using it
+    for prior in sorted(out_dir.glob(f"????-??-??_MTG-Collection_{safe}.md")):
+        note = prior
+        break
+    ticked = _existing_ticks(note)
+    _, _, owned = collection_state(out_dir)
+
+    groups: dict[str, list[dict]] = {}
+    for c in cards:
+        groups.setdefault(_set_section(c), []).append(c)
+
+    done = sum(1 for c in cards
+               if (_set_section(c), c["name"]) in ticked)
+    total_cost = sum(c["gbp"] or 0 for c in cards)
+    left_cost = sum(c["gbp"] or 0 for c in cards
+                    if (_set_section(c), c["name"]) not in ticked)
+    legendary = sum(1 for c in cards if c["legendary"])
+    pct = 100 * done / len(cards) if cards else 0
+    bar = "█" * round(pct / 5) + "░" * (20 - round(pct / 5))
+
+    blocks, summary = [], []
+    for sec in SET_SECTION_ORDER + [g for g in groups if g not in SET_SECTION_ORDER]:
+        items = groups.get(sec)
+        if not items:
+            continue
+        s_done = sum(1 for c in items if (sec, c["name"]) in ticked)
+        s_cost = sum(c["gbp"] or 0 for c in items
+                     if (sec, c["name"]) not in ticked)
+        summary.append(f"| {sec} | {s_done}/{len(items)} | £{s_cost:,.2f} |")
+        lines = []
+        for c in items:
+            mark = "x" if (sec, c["name"]) in ticked else " "
+            flags = "⭐ " if c["legendary"] else ""
+            if c["name"].lower() in owned or c["name"].split(" // ")[0].strip().lower() in owned:
+                flags += "✅ "
+            price = f"£{c['gbp']:,.2f}" if c["gbp"] is not None else "—"
+            lines.append(f"- [{mark}] {flags}{c['name']} — {price}")
+        blocks.append(f"### {sec} — {s_done}/{len(items)} · £{s_cost:,.2f} to go\n\n"
+                      + "\n".join(lines))
+
+    note.write_text(f"""---
+tags: [mtg, collection, set-target]
+updated: {date.today().isoformat()}
+set-codes: {", ".join(codes)}
+cards-total: {len(cards)}
+cards-owned: {done}
+cost-remaining-gbp: {left_cost:.2f}
+---
+
+# 🎯 {name} — collection target
+
+`{bar}` **{done}/{len(cards)}** ({pct:.0f}%) · **£{left_cost:,.2f}** still to buy of £{total_cost:,.2f}
+
+One line per card at its cheapest printing — tick a box as each one arrives and the count above updates on the next `--set` run (your ticks are always preserved). ⭐ = legendary ({legendary} of them) · ✅ = you already own this card by name in `_Collection.md`, so it may just need finding.
+
+| Section | Have | Left to buy |
+|---------|-----:|------------:|
+{chr(10).join(summary)}
+
+{chr(10).join(f"{b}{chr(10)}" for b in blocks)}""", encoding="utf-8")
+
+    print(f"Set:       {name} — {len(cards)} distinct cards")
+    print(f"Progress:  {done}/{len(cards)} ticked ({pct:.0f}%)"
+          f" — £{left_cost:,.2f} of £{total_cost:,.2f} still to buy")
+    print(f"Note:      {note}")
+
+
 BRIEFS_DIR = "_analysis-briefs"
 RECENT_CUTOFF = "2025-09-01"  # cards newer than this get oracle text in briefs
 
@@ -2527,6 +2714,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="price your _Collection.md (basics excluded) and write a "
              "💰 Collection Value section into it")
     parser.add_argument(
+        "--set", metavar="CODES", dest="set_codes",
+        help="build/refresh a set-collection checklist for one or more Scryfall "
+             "set codes (e.g. --set fin,fic). One tickable line per card, "
+             "grouped by rarity; re-running re-prices it and keeps your ticks")
+    parser.add_argument(
+        "--set-label", metavar="NAME", dest="set_label",
+        help="friendly name for the --set note (default: the set codes)")
+    parser.add_argument(
         "--collection", metavar="FILE", dest="collection",
         help="create the collection file from a card-list export (a plain "
              "alphabetical 'N Card Name' list). Refuses to overwrite a "
@@ -2598,6 +2793,14 @@ def main() -> None:
         if args.source:
             parser.error("--collection-value takes no other arguments.")
         collection_value(resolve_out_dir())
+        return
+    if args.set_codes:
+        if args.source:
+            parser.error("--set takes set codes, not a deck URL/file.")
+        codes = [c.strip().lower() for c in args.set_codes.split(",") if c.strip()]
+        if not codes:
+            parser.error("--set needs at least one set code, e.g. --set fin")
+        set_collection(resolve_out_dir(), codes, args.set_label)
         return
     if args.collection:
         if args.source:

@@ -46,6 +46,7 @@ Artwork:   ...\Attachments\2026-07-19_MTG_Doctor Doom, King of Latveria.jpg
 
 **Contents** — [Setup](#-setup) · [Commands](#-commands) · [Examples](#-examples) ·
 [Deck sources](#-deck-sources) · [Your collection](#-your-collection) ·
+[Collecting a set](#-collecting-a-set) ·
 [What lands in your vault](#-what-lands-in-your-vault) · [Prices](#-prices) ·
 [Claude Code skills](#-claude-code-skills) · [FAQ](#-faq)
 
@@ -97,6 +98,7 @@ python mtg_deck_importer.py --list                       # show deck ids
 python mtg_deck_importer.py --delete [id] [-y]           # remove a deck
 python mtg_deck_importer.py --reindex                    # renumber deck ids
 python mtg_deck_importer.py --index                      # rebuild _Decks.md
+python mtg_deck_importer.py --set <codes> [--set-label N] # set-collection checklist
 python mtg_deck_importer.py --collection <file>          # create the collection file
 python mtg_deck_importer.py --merge-collection <file>    # merge into an existing one
 python mtg_deck_importer.py --collection-value           # price your collection
@@ -151,6 +153,13 @@ assigned the next time a command reads the notes.
 | `--collection <file>` | **Create** the collection file from a card-list export — see [Getting your cards in](#getting-your-cards-in). Merges duplicate rows, strips set codes and foil markers, writes a plain alphabetical list. Refuses to overwrite a collection that already has cards unless you add `--force`. |
 | `--merge-collection <file>` | **Add to** an existing collection: diff an export against it and append what's missing under a dated heading. **Append-only** — nothing is ever deleted; cards in your collection but absent from the export are only *reported* for you to prune by hand. |
 | `--collection-value` | Price everything in your collection (basic and snow-covered lands excluded) and write a **💰 Collection Value** section into it: totals per market plus a top-20 table, replaced in place on re-runs. |
+
+### 🎯 Collecting a whole set
+
+| Command | What it does |
+|---------|--------------|
+| `--set <codes>` | Build or refresh a **set-collection checklist** — one tickable line per card across one or more Scryfall set codes (`--set fin,fic`), grouped by rarity with tokens, art series and masterpieces in their own blocks. See [Collecting a set](#-collecting-a-set). |
+| `--set-label <name>` | Friendly title for that note (default: the set codes). |
 
 ### 🧠 Analysis
 
@@ -305,6 +314,46 @@ deal. When you buy it, re-run with `--own`.
 comparisons cost no extra API calls.
 </details>
 
+## 🎯 Collecting a set
+
+Decks aren't the only thing worth tracking. `--set` builds a **long-term collection
+checklist** for one or more sets — the "own every card in this set eventually" project:
+
+```bash
+python mtg_deck_importer.py --set fin,fic,fca,pfin,afin,afic,tfin,tfic --set-label "Final Fantasy"
+```
+
+```
+Set:       Final Fantasy — 811 distinct cards
+Progress:  0/811 ticked (0%) — £1,242.40 of £1,242.40 still to buy
+```
+
+You get one note with a progress bar, a per-section summary, and a tickable line per card
+grouped by **Mythic · Rare · Uncommon · Common**, with **Through the Ages · Art Series ·
+Tokens** in their own blocks:
+
+```markdown
+`███░░░░░░░░░░░░░░░░░` **112/811** (14%) · £1,043.18 still to buy of £1,242.40
+
+### Rare — 41/320 · £352.11 to go
+
+- [x] Aerith, Last Ancient — £2.14
+- [ ] ⭐ ✅ Cloud, Midgar Mercenary — £3.02
+```
+
+Tick a box as each card arrives. **Re-running `--set` preserves every tick** while
+re-pricing the list, so it survives years of use — the whole point. ⭐ marks legendaries;
+✅ means you already own that card by name in your collection, so it may just need finding
+rather than buying.
+
+It's one line per **card**, at its cheapest printing across all the sets you listed — not
+one per printing. Chasing every borderless/showcase/foil variant of a premium set runs into
+five figures; this keeps it a collection rather than a mortgage. Digital-only cards (Arena's
+rebalanced `A-` versions) are excluded since they can't be owned in paper.
+
+Set notes are **not** decks: they carry no `deck-id`, so they never appear in `--list` or the
+`_Decks.md` index and can't be hit by `--delete` or `--reindex`.
+
 ## 📦 What lands in your vault
 
 | Path | What it is |
@@ -314,6 +363,7 @@ comparisons cost no extra API calls.
 | `_Decks.md` | Auto-generated master index of every deck — never edit by hand |
 | `imports/` | Archived `.txt` decklists, so any machine can re-import |
 | `_analysis-briefs/` | `--brief` output |
+| `YYYY-MM-DD_MTG-Collection_<name>.md` | `--set` collection checklists |
 | `.price-history.json` | Dated price snapshots behind the 📉 Price History tables |
 
 Lookups are cached in the repo's `.cache/` — Scryfall printings for 3 days, set codes for 7,
