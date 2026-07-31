@@ -1,11 +1,34 @@
 # 🃏 mtg-decklist-md
 
-**Deck link in → Obsidian deck note out.** ✨
+**A Commander deck library that lives in your Obsidian vault — and tells you what to buy.** ✨
 
-Give it a Moxfield/EDHREC URL or a `.txt` decklist and it writes a ready-to-review
-markdown note into your vault: commander art, the full deck list, per-card prices in
-€/$/£, a card gallery, and — if you keep a collection file — exactly which cards you're
-missing and what they'd cost.
+Point it at a deck (Moxfield, EDHREC, or a plain `.txt` list) and it writes a rich markdown
+note you own outright: commander art, the full list, a browsable card gallery, and prices
+from four markets converted to £.
+
+Then it does the part the deck sites don't. It reads **your** collection, works out exactly
+which cards you're still missing, re-prices each one at its **cheapest printing**, and hands
+you a copy-paste shopping list. Run it again next month and it re-prices the lot, charts the
+trend, and flags when a card you need has been reprinted and crashed in price.
+
+### What it actually does for you
+
+- 🗂️ **Manages a whole fleet, not one deck.** Every deck gets a stable id and a row in an
+  auto-generated index with its value, how much of it you own, and what finishing it costs —
+  so you can see all your decks and the total damage at a glance.
+- 🛒 **Answers "what do I still need?"** Quantity-aware against your collection (10 Mountains
+  towards a 23-Mountain deck is 13 short, not "missing"), and it understands Universes Beyond
+  flavour names, so *Loki's Double* counts as the *Spark Double* you own.
+- 💸 **Answers "what's the cheapest way to get it?"** A full **Cheapest Build** of every deck
+  at each card's cheapest functionally-identical printing, with `(SET) 123` pins that store
+  decklist finders actually parse.
+- 📈 **Watches prices over time.** Every refresh snapshots deck value and cost-to-finish, and
+  the console shouts when a card drops hard — the reprint radar for a deck you're saving for.
+- 📊 **Tells you about the deck itself.** Locally computed type counts, mana curve, role
+  buckets and a Commander **bracket checklist** (Game Changers, extra turns, mass land denial)
+  — no AI, no API key, just counting.
+- 🔒 **Leaves you owning everything.** Plain markdown and hosted image links in your own vault.
+  No account, no lock-in; it reads and writes files and stops there.
 
 ```bash
 python mtg_deck_importer.py https://moxfield.com/decks/<public_id>
@@ -110,7 +133,7 @@ assigned the next time a command reads the notes.
 
 | Command | What it does |
 |---------|--------------|
-| `--list` | Print every deck's id and name, then exit. |
+| `--list` | Print every deck's id and name, then exit — the quickest way to find the id another command wants. |
 | `--delete` | List the decks, ask which id to remove, then delete that note **and everything it owns** — commander art, the archived `.txt` it was imported from, its analysis brief and its price-history entry. Reindexes afterwards. |
 | `--delete <id>` | Same, targeting a known deck directly. Still asks for confirmation and shows the exact file list first. |
 | `-y`, `--yes` | Skip the `--delete` confirmation prompt. |

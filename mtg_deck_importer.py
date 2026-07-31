@@ -1313,7 +1313,7 @@ def write_brief(out_dir: Path, deck_id: int, note: Path) -> Path | None:
     text = note.read_text(encoding="utf-8")
     decklist = _note_decklist(text)
     if not decklist:
-        print(f"[{deck_id}] {note.name}: no deck list — skipped")
+        print(f"[{deck_id}] {deck_name_of(note)}: no deck list — skipped")
         return None
     name_m = re.search(r"^deck-name: (.+)$", text, re.M)
     deck_name = name_m.group(1).strip() if name_m else note.stem
@@ -1930,16 +1930,27 @@ def list_decks(out_dir: Path) -> None:
         print(f"No deck notes found in {out_dir}")
         return
     for did in sorted(ids):
-        text = ids[did].read_text(encoding="utf-8")
-        name_m = (re.search(r"^deck-name: (.+)$", text, re.M)
-                  or re.search(r"^# 🃏 (.+)$", text, re.M))
-        name = name_m.group(1).strip() if name_m else ids[did].stem
-        print(f"[{did:>3}] {name}  —  {ids[did].name}")
+        print(f"[{did:>3}] {deck_name_of(ids[did])}")
 
 
 def _deck_name(text: str, fallback: str) -> str:
-    m = re.search(r"^deck-name: (.+)$", text, re.M)
+    """A deck's display name from its note text: deck-name frontmatter, else the
+    H1, else the caller's fallback.
+    """
+    m = (re.search(r"^deck-name: (.+)$", text, re.M)
+         or re.search(r"^# 🃏 (.+)$", text, re.M))
     return m.group(1).strip() if m else fallback
+
+
+def deck_name_of(note: Path) -> str:
+    """Display name for a deck note on disk. Every listing and progress line
+    identifies decks this way — the dated filename is an implementation detail,
+    the deck name is what you actually recognise.
+    """
+    try:
+        return _deck_name(note.read_text(encoding="utf-8"), note.stem)
+    except OSError:
+        return note.stem
 
 
 def _deck_files(out_dir: Path, deck_id: int, note: Path) -> list[Path]:
@@ -2089,7 +2100,8 @@ def reindex(out_dir: Path, announce: bool = True) -> list[tuple]:
         if moved:
             print(f"Reindex:   renumbered {len(moved)} of {len(changes)} deck(s)")
             for o, n, note in moved:
-                print(f"           {o if o is not None else '—'} → {n}  {note.name}")
+                print(f"           {o if o is not None else '—'} → {n}  "
+                      f"{deck_name_of(note)}")
         else:
             print(f"Reindex:   all {len(changes)} deck id(s) already sequential")
     return changes
@@ -2121,7 +2133,7 @@ def recheck_all(out_dir: Path) -> None:
                 import_deck(source, out_dir, force=True, own=False, deck_id=did)
                 continue
             except (SystemExit, Exception) as exc:  # source unreachable → fall back
-                print(f"[{did}] {note.name}: source refresh failed ({exc}) — "
+                print(f"[{did}] {deck_name_of(note)}: source refresh failed ({exc}) — "
                       "refreshing prices from the stored list")
         _recheck_from_stored(did, note, collection_name, owned)
 
@@ -2138,7 +2150,7 @@ def _recheck_from_stored(did: int, note: Path, collection_name: str | None,
     text = note.read_text(encoding="utf-8")
     decklist = _note_decklist(text)
     if not decklist:
-        print(f"[{did}] {note.name}: no deck list found — skipped")
+        print(f"[{did}] {deck_name_of(note)}: no deck list found — skipped")
         return
 
     def field(pattern: str, fallback: str = "") -> str:
@@ -2178,7 +2190,7 @@ def _recheck_from_stored(did: int, note: Path, collection_name: str | None,
                  f" — to buy {len(buy['missing'])}"
                  f" (~EUR {buy['totals']['eur']:,.2f})" if buy else
                  " — ownership comparison skipped (no collection)")
-    print(f"[{did}] {note.name}: value ~EUR {report['totals']['eur']:,.2f}"
+    print(f"[{did}] {deck['name']}: value ~EUR {report['totals']['eur']:,.2f}"
           f"{ownership}")
     for line in alerts:
         print(f"[{did}] {line}")
@@ -2405,7 +2417,7 @@ def reimport(out_dir: Path, deck_id: int | None) -> None:
         text = note.read_text(encoding="utf-8")
         url_m = re.search(r"^deck-url: (.+)$", text, re.M)
         if not url_m:
-            print(f"[{did}] {note.name}: no deck-url — skipped")
+            print(f"[{did}] {deck_name_of(note)}: no deck-url — skipped")
             continue
         deck_url = url_m.group(1).strip()
 
@@ -2413,7 +2425,7 @@ def reimport(out_dir: Path, deck_id: int | None) -> None:
         try:
             deck = fetch_deck(resolve_source(deck_url, out_dir))
         except (SystemExit, Exception) as exc:  # any failure → stored-list fallback
-            print(f"[{did}] {note.name}: live fetch failed ({exc}) — "
+            print(f"[{did}] {deck_name_of(note)}: live fetch failed ({exc}) — "
                   "using the list stored in the note")
         if deck and deck.get("commanders"):
             mainboard = sorted(deck["mainboard"], key=lambda c: c[1].lower())
@@ -2422,7 +2434,7 @@ def reimport(out_dir: Path, deck_id: int | None) -> None:
         else:
             decklist = _note_decklist(text)
             if not decklist:
-                print(f"[{did}] {note.name}: no stored list to fall back on — skipped")
+                print(f"[{did}] {deck_name_of(note)}: no stored list to fall back on — skipped")
                 continue
             primary = decklist[0][1]  # listing puts the commander first
 
@@ -2459,7 +2471,7 @@ def reimport(out_dir: Path, deck_id: int | None) -> None:
         note.write_text(text, encoding="utf-8")
         changed = (f" — list changed, run --recheck {did} to refresh prices"
                    if list_changed else "")
-        print(f"[{did}] {note.name}: list + art refreshed "
+        print(f"[{did}] {deck_name_of(note)}: list + art refreshed "
               f"({len(decklist)} cards){changed}")
 
     # A changed deck list can change a note's card count, so keep the master
