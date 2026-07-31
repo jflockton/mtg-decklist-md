@@ -375,15 +375,10 @@ into a specific preserved heading — never touching the generated data around i
 | `/analyse-deck <id>` | 🎮 Play Pattern · 🏆 Win Conditions · ⚠️ Interactions & Warnings | Deliberately token-lean: its only input is the deck's `--brief` file, never the full note. Run `--brief <id>` first. |
 | `/deck-guide <id>` | 🧭 Deck Guide | A full strategy guide — the 100 by role, play pattern, non-obvious warnings, bracket justification, budget notes with cheaper alternatives, and an upgrade path. |
 
-<details>
-<summary>A third, local-only skill</summary>
-
-`.claude/skills/buy-deck/` (`/buy-deck <id>`) solves a deck's Buy List for **lowest total cost
-including postage** across UK shops, rather than lowest price per card — which usually means
-consolidating into fewer baskets. It is **deliberately not committed**: it contains a personal
-marketplace account name and saved wants-list ids. Sanitise those into `.env` settings before
-sharing it.
-</details>
+Both are coupled to this project on purpose: `analyse-deck` consumes the `--brief` format, and
+`deck-guide` writes into headings the importer preserves. A skill that only needs the *notes*
+(a shopping workflow, say) doesn't belong here — put it in `~/.claude/skills/` instead, where
+it's available in every session rather than only when this repo is open.
 
 ## ❓ FAQ
 
