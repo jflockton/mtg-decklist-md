@@ -2314,6 +2314,10 @@ def reimport(out_dir: Path, deck_id: int | None) -> None:
         print(f"[{did}] {note.name}: list + art refreshed "
               f"({len(decklist)} cards){changed}")
 
+    # A changed deck list can change a note's card count, so keep the master
+    # index in step — every other write path already rebuilds it.
+    update_deck_index(out_dir)
+
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -2334,9 +2338,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="append the whole deck to _Collection.md as owned before comparing")
     parser.add_argument(
         "--recheck", nargs="?", const="__all__", default=None, metavar="ID",
-        help="no ID: refresh every note's prices/buy list from the lists "
-             "already in the notes (no site fetching). With an ID (see --list): "
-             "full re-import of just that deck (list + prices + art)")
+        help="full re-import from each deck's original source — list, prices, "
+             "galleries and buy lists (art reused unless the commander "
+             "changed). Every note, or one by ID (see --list). Falls back to "
+             "re-pricing a note's stored list if its source is unreachable")
     parser.add_argument(
         "--reimport", nargs="?", const="__all__", default=None, metavar="ID",
         help="refresh deck lists and card art from source WITHOUT new prices; "
