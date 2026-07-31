@@ -98,7 +98,7 @@ python mtg_deck_importer.py --list                       # show deck ids
 python mtg_deck_importer.py --delete [id] [-y]           # remove a deck
 python mtg_deck_importer.py --reindex                    # renumber deck ids
 python mtg_deck_importer.py --index                      # rebuild _Decks.md
-python mtg_deck_importer.py --set <codes> [--set-label N] # set-collection checklist
+python mtg_deck_importer.py --set [name|preset|codes]     # set-collection checklist
 python mtg_deck_importer.py --collection <file>          # create the collection file
 python mtg_deck_importer.py --merge-collection <file>    # merge into an existing one
 python mtg_deck_importer.py --collection-value           # price your collection
@@ -158,8 +158,11 @@ assigned the next time a command reads the notes.
 
 | Command | What it does |
 |---------|--------------|
-| `--set <codes>` | Build or refresh a **set-collection checklist** — one tickable line per card across one or more Scryfall set codes (`--set fin,fic`), grouped by rarity with tokens, art series and masterpieces in their own blocks. See [Collecting a set](#-collecting-a-set). |
-| `--set-label <name>` | Friendly title for that note (default: the set codes). |
+| `--set` | *(no argument)* Refresh **every** checklist you already have — re-prices everything, ticks anything new in your collection, keeps your ticks. The everyday command. |
+| `--set <name>` | Refresh one checklist by its name (`--set "Final Fantasy"`), reusing the set codes it was built from. |
+| `--set <preset>` | Build from a shorthand — `ff` covers all eight Final Fantasy products. |
+| `--set <codes>` | Build from raw Scryfall set codes (`--set fin,fic`). See [Collecting a set](#-collecting-a-set). |
+| `--set-label <name>` | Friendly title for the note (default: the preset's name, or the set codes). |
 
 ### 🧠 Analysis
 
@@ -320,7 +323,7 @@ Decks aren't the only thing worth tracking. `--set` builds a **long-term collect
 checklist** for one or more sets — the "own every card in this set eventually" project:
 
 ```bash
-python mtg_deck_importer.py --set fin,fic,fca,pfin,afin,afic,tfin,tfic --set-label "Final Fantasy"
+python mtg_deck_importer.py --set ff
 ```
 
 ```

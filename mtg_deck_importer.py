@@ -1316,6 +1316,53 @@ def render_deck_shape(shape: dict) -> str:
 SET_SECTION_ORDER = ["Mythic", "Rare", "Uncommon", "Common", "Special", "Bonus",
                      "Through the Ages", "Art Series", "Tokens"]
 
+COLLECTION_NOTE_GLOB = "????-??-??_MTG-Collection_*.md"
+
+# Shorthands for "the whole of product X", because nobody should have to retype
+# eight set codes to refresh a list. Key → (set codes, default label).
+SET_PRESETS = {
+    "ff": (["fin", "fic", "fca", "pfin", "afin", "afic", "tfin", "tfic"],
+           "Final Fantasy"),
+}
+SET_PRESETS["finalfantasy"] = SET_PRESETS["final-fantasy"] = SET_PRESETS["ff"]
+
+
+def collection_notes(out_dir: Path) -> list[Path]:
+    """Every set-collection checklist note in the vault."""
+    return sorted(out_dir.glob(COLLECTION_NOTE_GLOB))
+
+
+def _note_set_codes(note: Path) -> list[str]:
+    """The set codes a checklist note was built from, stored in its frontmatter
+    so a refresh never needs them typed again.
+    """
+    m = re.search(r"^set-codes: (.+)$", note.read_text(encoding="utf-8"), re.M)
+    return [c.strip() for c in m.group(1).split(",") if c.strip()] if m else []
+
+
+def _note_label(note: Path) -> str:
+    """The label a checklist note was created with (from its filename)."""
+    return note.stem.split("_MTG-Collection_", 1)[-1]
+
+
+def resolve_set_target(out_dir: Path, arg: str) -> tuple[list[str], str | None]:
+    """Turn whatever the user typed after --set into (set codes, label).
+
+    Accepts, in order of preference: the label of a checklist note that already
+    exists (so `--set "Final Fantasy"` refreshes it using the codes it was built
+    from), a preset name, or a raw comma-separated list of Scryfall set codes.
+    """
+    for note in collection_notes(out_dir):
+        if _note_label(note).lower() == arg.lower():
+            codes = _note_set_codes(note)
+            if codes:
+                return codes, _note_label(note)
+    key = arg.lower().replace(" ", "")
+    if key in SET_PRESETS:
+        codes, label = SET_PRESETS[key]
+        return list(codes), label
+    return [c.strip().lower() for c in arg.split(",") if c.strip()], None
+
 
 def _set_section(card: dict) -> str:
     """Which block of the checklist a card belongs in. Rarity is the natural
@@ -2727,10 +2774,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="price your _Collection.md (basics excluded) and write a "
              "💰 Collection Value section into it")
     parser.add_argument(
-        "--set", metavar="CODES", dest="set_codes",
-        help="build/refresh a set-collection checklist for one or more Scryfall "
-             "set codes (e.g. --set fin,fic). One tickable line per card, "
-             "grouped by rarity; re-running re-prices it and keeps your ticks")
+        "--set", nargs="?", const="__all__", default=None, metavar="WHAT",
+        dest="set_codes",
+        help="set-collection checklist: one tickable line per card, grouped by "
+             "rarity. No argument refreshes every checklist you already have. "
+             "Otherwise a checklist's name, a preset (ff), or Scryfall set "
+             "codes (fin,fic) to build a new one. Refreshing re-prices "
+             "everything and keeps your ticks")
     parser.add_argument(
         "--set-label", metavar="NAME", dest="set_label",
         help="friendly name for the --set note (default: the set codes)")
@@ -2807,13 +2857,30 @@ def main() -> None:
             parser.error("--collection-value takes no other arguments.")
         collection_value(resolve_out_dir())
         return
-    if args.set_codes:
+    if args.set_codes is not None:
         if args.source:
-            parser.error("--set takes set codes, not a deck URL/file.")
-        codes = [c.strip().lower() for c in args.set_codes.split(",") if c.strip()]
+            parser.error("--set takes a checklist name, preset or set codes, "
+                         "not a deck URL/file.")
+        out_dir = resolve_out_dir()
+        if args.set_codes == "__all__":
+            notes = collection_notes(out_dir)
+            if not notes:
+                sys.exit("No set checklists yet. Create one with a preset or set "
+                         "codes, e.g.:\n"
+                         "  python mtg_deck_importer.py --set ff\n"
+                         "  python mtg_deck_importer.py --set fin,fic "
+                         "--set-label \"Final Fantasy\"")
+            for note in notes:
+                codes = _note_set_codes(note)
+                if not codes:
+                    print(f"Skipped:   {note.name} has no set-codes: line")
+                    continue
+                set_collection(out_dir, codes, args.set_label or _note_label(note))
+            return
+        codes, label = resolve_set_target(out_dir, args.set_codes)
         if not codes:
-            parser.error("--set needs at least one set code, e.g. --set fin")
-        set_collection(resolve_out_dir(), codes, args.set_label)
+            parser.error("--set needs a checklist name, a preset, or set codes.")
+        set_collection(out_dir, codes, args.set_label or label)
         return
     if args.collection:
         if args.source:
