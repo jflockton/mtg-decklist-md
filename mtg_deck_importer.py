@@ -2143,12 +2143,20 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
     history, alerts = record_history(out_dir, deck_id, deck["name"], report,
                                      buy, cheap, choices)
     shape_section = render_deck_shape(deck_shape(decklist, prices))
-    note_path.write_text(
-        build_note(deck, decklist, image_url, deck_url, report, buy,
-                   collection_name, reviews, choices, deck_id, history,
-                   shape_section),
-        encoding="utf-8",
-    )
+    new_text = build_note(deck, decklist, image_url, deck_url, report, buy,
+                          collection_name, reviews, choices, deck_id, history,
+                          shape_section)
+    # build_note stamps created: today. On a refresh of an existing note
+    # (--force / --recheck) keep the ORIGINAL created date instead of resetting
+    # it — matching --reimport and _recheck_from_stored.
+    if note_path.exists():
+        old_created = re.search(r"^created: (.+)$",
+                                note_path.read_text(encoding="utf-8"), re.M)
+        if old_created:
+            new_text = re.sub(r"^created: .*$",
+                              f"created: {old_created.group(1).strip()}",
+                              new_text, count=1, flags=re.M)
+    note_path.write_text(new_text, encoding="utf-8")
 
     if txt_src:
         imports_dir = out_dir / "imports"  # in the vault → syncs to every machine
