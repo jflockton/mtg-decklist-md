@@ -333,18 +333,22 @@ grouped by **Mythic · Rare · Uncommon · Common**, with **Through the Ages · 
 Tokens** in their own blocks:
 
 ```markdown
-`███░░░░░░░░░░░░░░░░░` **112/811** (14%) · £1,043.18 still to buy of £1,242.40
+`████░░░░░░░░░░░░░░░░` **175/811** (22%) · £1,144.78 still to buy of £1,242.40
 
-### Rare — 41/320 · £352.11 to go
+### Rare — 78/320 · £352.11 to go
 
-- [x] Aerith, Last Ancient — £2.14
-- [ ] ⭐ ✅ Cloud, Midgar Mercenary — £3.02
+- [x] ⭐ Aerith, Last Ancient — £0.29
+- [ ] ⭐ Cloud, Midgar Mercenary — £3.02
 ```
 
-Tick a box as each card arrives. **Re-running `--set` preserves every tick** while
-re-pricing the list, so it survives years of use — the whole point. ⭐ marks legendaries;
-✅ means you already own that card by name in your collection, so it may just need finding
-rather than buying.
+**A ticked box means you have it**, and it comes from either of two places: your
+collection file already listing the card, or a tick you made by hand. So you don't start
+from zero — the run above began at 175/811 purely from `_Collection.md`.
+
+Tick a box as each new card arrives. **Re-running `--set` preserves every tick** while
+re-pricing the list, so it survives years of use — the whole point. A tick is never
+removed by a refresh, so a card you own but haven't added to your collection file stays
+ticked. ⭐ marks legendaries.
 
 It's one line per **card**, at its cheapest printing across all the sets you listed — not
 one per printing. Chasing every borderless/showcase/foil variant of a premium set runs into

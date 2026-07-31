@@ -1411,9 +1411,9 @@ def _existing_ticks(note: Path) -> set[tuple[str, str]]:
 
 
 def set_collection(out_dir: Path, codes: list[str], label: str | None = None) -> None:
-    """--set: build or refresh a set-collection checklist note. Ticks survive,
-    prices refresh, and cards you already own by name are flagged so progress
-    doesn't start from zero.
+    """--set: build or refresh a set-collection checklist note. A ticked box
+    means "I have this card", from either source: a tick you made by hand, or
+    your collection file already listing it. Both survive a refresh.
     """
     cards = fetch_set_cards(codes)
     if not cards:
@@ -1431,6 +1431,19 @@ def set_collection(out_dir: Path, codes: list[str], label: str | None = None) ->
     groups: dict[str, list[dict]] = {}
     for c in cards:
         groups.setdefault(_set_section(c), []).append(c)
+
+    # Since a line is one CARD (any printing counts), owning it by name in the
+    # collection file simply means you have it — so tick the box rather than
+    # decorating it and leaving the reader to reconcile the two.
+    from_collection = 0
+    for c in cards:
+        key = (_set_section(c), c["name"])
+        if key in ticked:
+            continue
+        if (c["name"].lower() in owned
+                or c["name"].split(" // ")[0].strip().lower() in owned):
+            ticked.add(key)
+            from_collection += 1
 
     done = sum(1 for c in cards
                if (_set_section(c), c["name"]) in ticked)
@@ -1454,8 +1467,6 @@ def set_collection(out_dir: Path, codes: list[str], label: str | None = None) ->
         for c in items:
             mark = "x" if (sec, c["name"]) in ticked else " "
             flags = "⭐ " if c["legendary"] else ""
-            if c["name"].lower() in owned or c["name"].split(" // ")[0].strip().lower() in owned:
-                flags += "✅ "
             price = f"£{c['gbp']:,.2f}" if c["gbp"] is not None else "—"
             lines.append(f"- [{mark}] {flags}{c['name']} — {price}")
         blocks.append(f"### {sec} — {s_done}/{len(items)} · £{s_cost:,.2f} to go\n\n"
@@ -1474,7 +1485,9 @@ cost-remaining-gbp: {left_cost:.2f}
 
 `{bar}` **{done}/{len(cards)}** ({pct:.0f}%) · **£{left_cost:,.2f}** still to buy of £{total_cost:,.2f}
 
-One line per card at its cheapest printing — tick a box as each one arrives and the count above updates on the next `--set` run (your ticks are always preserved). ⭐ = legendary ({legendary} of them) · ✅ = you already own this card by name in `_Collection.md`, so it may just need finding.
+One line per card at its cheapest printing. **A ticked box means you have it** — tick one as each card arrives and the counts update on the next `--set` run. ⭐ = legendary ({legendary} of them).
+
+{from_collection} of the ticks below came from `_Collection.md` already listing the card; the rest are yours. Ticks are never removed by a refresh, so if a card isn't in your collection file you can still tick it here and it will stick.
 
 | Section | Have | Left to buy |
 |---------|-----:|------------:|
