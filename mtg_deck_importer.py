@@ -1614,17 +1614,29 @@ def set_collection(out_dir: Path, codes: list[str], label: str | None = None,
     One line per printing, grouped by product then treatment and ordered by
     collector number, so a card in your hand maps to exactly one line. A ticked
     box means you have that printing; ticks come from your collection file
-    (where it records the id) or from you, and survive every refresh.
+    (where it records the id) or from you, and survive every refresh. The note
+    is located by the set codes in its frontmatter, so it can be renamed freely.
     """
     printings = fetch_set_printings(codes)
     if not printings:
         sys.exit(f"No cards found for: {', '.join(codes)}")
+    # Find the note by the set codes in its frontmatter, NOT by its filename —
+    # renaming a note (adding an emoji, say) must never orphan it and spawn a
+    # duplicate, which would silently abandon every tick it holds.
+    note = None
+    for prior in collection_notes(out_dir):
+        if set(_note_set_codes(prior)) == set(codes):
+            note = prior
+            if not label:
+                label = _note_label(prior)
+            break
     name = label or ", ".join(c.upper() for c in codes)
-    safe = ILLEGAL_FILENAME_CHARS.sub("", name)
-    note = out_dir / f"{date.today().isoformat()}_MTG-Collection_{safe}.md"
-    for prior in sorted(out_dir.glob(f"????-??-??_MTG-Collection_{safe}.md")):
-        note = prior
-        break
+    if note is None:
+        safe = ILLEGAL_FILENAME_CHARS.sub("", name)
+        note = out_dir / f"{date.today().isoformat()}_MTG-Collection_{safe}.md"
+        for prior in sorted(out_dir.glob(f"????-??-??_MTG-Collection_{safe}.md")):
+            note = prior
+            break
     ticked = set() if reset else _existing_ticks(note)
 
     _, coll_path, _owned = collection_state(out_dir)
@@ -1709,7 +1721,7 @@ def set_collection(out_dir: Path, codes: list[str], label: str | None = None,
             blocks.append(f"### {t} — {t_done}/{len(items)} "
                           f"· £{t_cost:,.2f} to go\n\n{body}")
 
-    hand = done - by_id - by_name
+    already = done - by_id - by_name   # ticks the note already held
     warn = (f" ⚠️ {needs_id} cards are in your collection by name but have several "
             f"printings here — they need an id before they can count."
             if needs_id else "")
@@ -1733,7 +1745,7 @@ Every printing has its own line, because a different art is a different card to 
 
 **To tick a box:** record the card in `_Collection.md` with its id — `1 Sol Ring (FIC) 357` — and the matching box ticks itself on the next `--set`. Or tick it here by hand; ticks are never removed by a refresh.
 
-**Ticked: {by_id} by id · {by_name} by name (single-printing cards) · {hand} by hand.**{warn}
+**Ticked: {done} of {len(printings)}** — {by_id} newly matched by id, {by_name} by name (cards with only one printing), {already} already ticked before this run.{warn}
 
 | Product | Have | Left to buy |
 |---------|-----:|------------:|
@@ -1746,7 +1758,8 @@ Every printing has its own line, because a different art is a different card to 
           f"({distinct} distinct cards)")
     print(f"Progress:  {done}/{len(printings)} ticked ({pct:.0f}%)"
           f" — £{left_cost:,.2f} of £{total_cost:,.2f} still to buy")
-    print(f"           {by_id} by id, {by_name} by name, {hand} by hand"
+    print(f"           {by_id} new by id, {by_name} new by name,"
+          f" {already} already ticked"
           + (f", {needs_id} need an id" if needs_id else ""))
     print(f"Note:      {note}")
 
