@@ -152,7 +152,7 @@ assigned the next time a command reads the notes.
 |---------|--------------|
 | `--collection <file>` | **Create** the collection file from a card-list export — see [Getting your cards in](#getting-your-cards-in). Merges duplicate rows, strips set codes and foil markers, writes a plain alphabetical list. Refuses to overwrite a collection that already has cards unless you add `--force`. |
 | `--merge-collection <file>` | **Add to** an existing collection: diff an export against it and append what's missing under a dated heading. **Append-only** — nothing is ever deleted; cards in your collection but absent from the export are only *reported* for you to prune by hand. |
-| `--collection-value` | Price everything in your collection (basic and snow-covered lands excluded) and write a **💰 Collection Value** section into it: totals per market plus a top-20 table, replaced in place on re-runs. |
+| `--collection-value` | Price your collection and write a **💰 Collection Value** block at the **top** of the file: Cardmarket/TCGPlayer/ManaPool totals with a ≈ GBP headline, a top-5 table and a collapsed top-20. Uses the exact printing and the **foil** price wherever a line records them. Basics excluded. Runs automatically after `--collection` and `--merge-collection`. |
 
 ### 🎯 Collecting a whole set
 

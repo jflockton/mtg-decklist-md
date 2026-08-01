@@ -554,6 +554,7 @@ notes anywhere you like and they'll be ignored.
     print(f"Collection: wrote {path}{replaced}")
     print(f"           {len(cards)} unique cards ({copies} copies) "
           f"from {Path(list_path).name}")
+    refresh_collection_value(out_dir)
     print("Tip:       run --recheck to rebuild every deck's buy lists against it.")
 
 
@@ -615,10 +616,11 @@ def merge_collection(out_dir: Path, list_path: str) -> None:
     if only_current:
         print(f"           in collection only: {len(only_current)}"
               " (kept — listed in the new section for manual review)")
+    refresh_collection_value(out_dir)
     print("Tip:       run --recheck to refresh every deck's buy lists.")
 
 
-def collection_value(out_dir: Path) -> None:
+def collection_value(out_dir: Path, quiet: bool = False) -> None:
     """Price the whole collection (--collection-value): totals per market and
     a top-20 table, printed to the console and written into _Collection.md as
     a '💰 Collection Value' section (replaced in place on re-runs). Basic
@@ -645,9 +647,10 @@ def collection_value(out_dir: Path) -> None:
                if e["name"].lower() not in BASIC_LAND_NAMES
                and not e["name"].lower().startswith("snow-covered ")]
     pinned = [e for e in entries if e["set"] and e["num"]]
-    print(f"Pricing:   {len(names)} unique cards from {fname}"
-          f" ({len(pinned)} pinned to an exact printing,"
-          f" {sum(1 for e in entries if e['foil'])} foil)...")
+    if not quiet:
+        print(f"Pricing:   {len(names)} unique cards from {fname}"
+              f" ({len(pinned)} pinned to an exact printing,"
+              f" {sum(1 for e in entries if e['foil'])} foil)...")
     prices = fetch_prices(names)
     exact = fetch_printing_prices(pinned)
     rates = fx_rates()
@@ -690,44 +693,75 @@ def collection_value(out_dir: Path) -> None:
             ("🛍️ ManaPool", f"${totals['mp']:,.2f}",
              totals["mp"] * rates["usd_gbp"] if rates else None),
         ])
-    top_rows = "\n".join(
-        f"| {disp}{f' ×{qty}' if qty > 1 else ''} | {_eur_cell(eur)} | "
-        f"{_eur_cell((eur or 0) * qty)} | {_usd_cell(mp)} |"
-        for qty, disp, eur, mp in rows[:20])
-    top_body = f"""| Card | Each | Value | MP $ each |
-|------|-----:|------:|----------:|
-{top_rows}"""
-    unpriced_note = (f"\n> ⚠️ No price found for {len(unpriced)} card(s): "
+    def _rows_table(items):
+        body = "\n".join(
+            f"| {disp}{f' ×{qty}' if qty > 1 else ''} | {_eur_cell(eur)} | "
+            f"{_eur_cell((eur or 0) * qty)} | {_gbp_cell((eur or 0) * qty * rates['eur_gbp'] if rates and eur else None)} |"
+            for qty, disp, eur, _mp in items)
+        return ("| Card | Each | Value | ≈ GBP |\n"
+                "|------|-----:|------:|------:|\n" + body)
+
+    unpriced_note = (f"\n\n> ⚠️ No price found for {len(unpriced)} card(s): "
                      + ", ".join(unpriced[:15])
                      + ("…" if len(unpriced) > 15 else "")
                      if unpriced else "")
-    section = f"""## 💰 Collection Value
+    headline = (f"£{totals['eur'] * rates['eur_gbp']:,.2f}" if rates
+                else f"€{totals['eur']:,.2f}")
+    section = f"""## 💰 Collection Value — {headline}
 
-*Priced {today} — {len(rows)}/{len(names)} unique non-basic cards priced ({copies} copies); basic lands excluded. ManaPool is live cheapest listings, others are market averages.*
+*Cardmarket, priced {today}. {len(rows)}/{len(entries)} non-basic entries priced, {copies} copies across {len(names)} distinct cards. Exact printings and foil prices used where a line records them.*
 
 | Market | Value | ≈ GBP |
 |--------|------:|------:|
 {market_rows}
 
-{_callout("🏆 Top 20 most valuable", top_body)}{unpriced_note}
+### 🏆 Top 5 most valuable
+
+{_rows_table(rows[:5])}
+
+{_callout("📋 Top 20", _rows_table(rows[:20]))}{unpriced_note}
 """
     path = collection_path(out_dir)
     text = path.read_text(encoding="utf-8-sig")
-    if "## 💰 Collection Value" in text:
-        text = re.sub(r"## 💰 Collection Value\n.*?(?=\n## |\Z)",
-                      lambda _: section, text, count=1, flags=re.S)
+    # Drop any previous block wherever it sat, then place the fresh one at the
+    # top — the total is the thing you want to see on opening the note, not
+    # something to scroll 400 card lines to reach.
+    text = re.sub(r"\n*## 💰 Collection Value[^\n]*\n.*?(?=\n## |\Z)", "",
+                  text, count=1, flags=re.S)
+    m = re.search(r"^## ", text, re.M)
+    body = section.rstrip("\n")
+    if m:
+        head = text[:m.start()].rstrip("\n")
+        text = f"{head}\n\n{body}\n\n{text[m.start():]}"
     else:
-        text = text.rstrip("\n") + "\n\n" + section
-    path.write_text(text, encoding="utf-8")
+        text = text.rstrip("\n") + "\n\n" + body + "\n"
+    path.write_text(re.sub(r"\n{3,}", "\n\n", text), encoding="utf-8",
+                    newline="\n")
 
     gbp = f" / GBP {totals['eur'] * rates['eur_gbp']:,.2f}" if rates else ""
+    if quiet:  # auto-refresh after an import — one line is enough
+        print(f"Value:     collection now ~EUR {totals['eur']:,.2f}{gbp}"
+              f" ({path.name} updated)")
+        return
     print(f"Value:     ~EUR {totals['eur']:,.2f}{gbp}"
           f" / USD {totals['usd']:,.2f} / MP USD {totals['mp']:,.2f}")
-    if rows:
-        q, d, e, _ = rows[0]
-        print(f"Top card:  {d}{f' ×{q}' if q > 1 else ''}"
-              f" (~EUR {(e or 0) * q:,.2f})")
-    print(f"Updated:   💰 Collection Value section in {path.name}")
+    for q, d, e, _ in rows[:5]:
+        print(f"           {d}{f' ×{q}' if q > 1 else ''}"
+              f" — ~EUR {(e or 0) * q:,.2f}")
+    print(f"Updated:   💰 Collection Value at the top of {path.name}")
+
+
+def refresh_collection_value(out_dir: Path) -> None:
+    """Re-price the collection after the app has changed it, so the value block
+    at the top of the note is never stale. Best-effort: an offline or throttled
+    run must not fail the import that just succeeded.
+    """
+    try:
+        collection_value(out_dir, quiet=True)
+    except SystemExit:
+        pass
+    except Exception as exc:
+        print(f"Value:     could not refresh the value block ({exc})")
 
 
 def output_dir() -> Path:
