@@ -227,6 +227,7 @@ CREATE TABLE IF NOT EXISTS cards (
   flavor_name      TEXT,
   set_code         TEXT NOT NULL,
   set_name         TEXT NOT NULL DEFAULT '',
+  set_type         TEXT NOT NULL DEFAULT '',
   collector_number TEXT NOT NULL DEFAULT '',
   rarity           TEXT NOT NULL DEFAULT '',
   type_line        TEXT NOT NULL DEFAULT '',
@@ -284,6 +285,7 @@ def _bulk_row(c: dict) -> tuple | None:
         name.split("//")[0].strip() if "//" in name else None,
         c.get("flavor_name"),
         c.get("set", "").lower(), c.get("set_name", ""),
+        c.get("set_type", ""),
         str(c.get("collector_number", "")), c.get("rarity", ""),
         c.get("type_line", ""), c.get("cmc"),
         c.get("oracle_text") or " // ".join(
@@ -349,7 +351,7 @@ def _build_scryfall_db() -> None:
         db.execute("PRAGMA synchronous = OFF")
         db.executescript(DB_SCHEMA)
         insert = ("INSERT OR REPLACE INTO cards VALUES ("
-                  + ",".join("?" * 24) + ")")
+                  + ",".join("?" * 25) + ")")
         batch, total = [], 0
         opener = gzip.open if uri.endswith(".gz") else open
         with opener(raw, "rt", encoding="utf-8") as fh:
@@ -439,29 +441,33 @@ def scryfall_card_image(card: dict, size: str = "small") -> str | None:
     return uris.get(size) if uris else None
 
 
-# Gold borders are World Championship and Pro Tour Collector Set replicas;
-# silver are the Un-sets and Collectors' Edition. Both are cheap, both turn up
-# near the top of a price-sorted list, and neither is legal to play.
+# Scryfall files World Championship decks, Collectors' Edition, Intl.
+# Collectors' Edition, Pro Tour Collector Sets and 30th Anniversary under
+# "memorabilia": replicas and collector curios, not legal to play, and
+# routinely a card's cheapest listings. Smoke's cheapest printing is an Intl.
+# Collectors' Edition; its cheapest playable one costs 60% more.
+UNPLAYABLE_SET_TYPES = {"memorabilia"}
 UNPLAYABLE_BORDERS = {"gold", "silver"}
 
 
 def _buyable(p: dict) -> bool:
     """Is this printing one you could actually sleeve up and play?
 
-    Two ways a "cheapest printing" betrays you, and Birds of Paradise shows
-    both — its six cheapest rows are a Summer Magic and five World
-    Championship cards:
+    Three ways a "cheapest printing" betrays you:
 
-    - It isn't playable. Gold-bordered championship decks are replicas, banned
-      everywhere, and often a card's cheapest listings. Scryfall's `legalities`
-      does NOT catch this: legality is a property of the card, not the
-      printing, so every Birds of Paradise reads "legal". The border does.
+    - It's a collector replica. Caught by set type, not by Scryfall's
+      `legalities` — legality belongs to the card, not the printing, so every
+      Birds of Paradise reads "legal" including the five World Championship
+      ones among its six cheapest rows. Border colour alone doesn't catch it
+      either: Collectors' Edition is black-bordered.
     - Its price is fiction. Summer Magic is a 1994 test print worth thousands;
-      Cardmarket still shows €3.00. What these have in common is a EUR price
-      and no USD price at all — one lonely European listing with no second
-      market to corroborate it. Requiring both is blunt but effective.
+      Cardmarket still shows €3.00 for its Birds of Paradise. What these have
+      in common is a EUR price and no USD price at all — one lonely European
+      listing with no second market to corroborate it. Requiring both is
+      blunt but effective.
     """
-    return p.get("border") not in UNPLAYABLE_BORDERS \
+    return p.get("set_type") not in UNPLAYABLE_SET_TYPES \
+        and p.get("border") not in UNPLAYABLE_BORDERS \
         and p.get("eur") is not None and p.get("usd") is not None
 
 
@@ -500,9 +506,9 @@ def _prints_from_db(name: str, canonical: str | None) -> dict | None:
             return None
         canonical = row["name"]
     rows = db.execute(
-        "SELECT name, flavor_name, set_name, set_code, collector_number, eur, "
-        "usd, image_uri, border_color FROM cards WHERE name = ? COLLATE NOCASE",
-        (canonical,)).fetchall()
+        "SELECT name, flavor_name, set_name, set_code, set_type, "
+        "collector_number, eur, usd, image_uri, border_color "
+        "FROM cards WHERE name = ? COLLATE NOCASE", (canonical,)).fetchall()
     if not rows:
         return None
     info = {"aliases": {name.lower(), canonical.lower()}, "canonical": canonical,
@@ -518,7 +524,7 @@ def _prints_from_db(name: str, canonical: str | None) -> dict | None:
         priced.append({"eur": r["eur"], "usd": r["usd"], "set": r["set_name"],
                        # the row knows its own set code, so the pin never
                        # depends on a set-name lookup that could miss
-                       "set_code": r["set_code"],
+                       "set_code": r["set_code"], "set_type": r["set_type"],
                        "num": r["collector_number"],
                        "printed_as": r["flavor_name"] or r["name"],
                        "img": r["image_uri"], "border": r["border_color"]})
@@ -584,6 +590,7 @@ def card_prints_info(name: str, canonical: str | None = None) -> dict:
                     "eur": eur,
                     "usd": float(c["prices"]["usd"]) if c["prices"].get("usd") else None,
                     "set": c["set_name"], "set_code": c.get("set"),
+                    "set_type": c.get("set_type", ""),
                     "num": c["collector_number"],
                     "printed_as": c.get("flavor_name") or c["name"],
                     "img": scryfall_card_image(c),
@@ -1481,7 +1488,11 @@ def budget_choices(decklist: list[tuple[int, str]],
              "eur": deck_eur, "img": p.get("img"),
              "deck_eur": deck_eur, "changed": False}
         ch = card_prints_info(name, p.get("name")).get("cheapest")
-        if ch and _sane_cheaper(ch["eur"], deck_eur):
+        if ch:
+            # Always pin the printing, even when it is the one the deck's own
+            # price already referred to. A bare "1 Smoke" sends you to a search
+            # listing Alpha at €499 and Beta at €90 — the €4.90 Fourth Edition
+            # this line is quoting is only findable by its id.
             printed = ch["printed_as"] \
                 if ch["printed_as"].lower() != name.lower() else name
             c.update(printed=printed, set_name=ch["set"],
@@ -1489,7 +1500,9 @@ def budget_choices(decklist: list[tuple[int, str]],
                                or set_code_map().get(ch["set"].lower())),
                      num=ch.get("num"),
                      eur=ch["eur"], img=ch.get("img") or c["img"],
-                     changed=True)
+                     # "changed" drives the swap labelling and the Save column,
+                     # so it stays about price, not about whether we pinned
+                     changed=_sane_cheaper(ch["eur"], deck_eur))
         choices[name.lower()] = c
     return choices
 
@@ -2249,8 +2262,9 @@ The same missing cards at their cheapest versions ≈ **€{cheap["totals"]["eur
 ### 📋 Budget Buy List (copy-paste)
 
 The missing cards at their cheapest versions — `(SET) 123` pins the exact
-printing (MTG Arena syntax — Moxfield and most store decklist finders
-understand it); lines without a code use any printing.
+printing each price refers to (MTG Arena syntax — Moxfield and most store
+decklist finders understand it). Search a name without its id and you'll be
+quoted the wrong printing.
 
 ```
 {listing}
@@ -2508,9 +2522,10 @@ def render_budget_list(decklist: list[tuple[int, str]], report: dict,
     prices_body = f"""| Card (cheapest version) | EUR | ≈ GBP |
 |-------------------------|----:|------:|
 {body}"""
-    listing_body = f"""`(SET) 123` pins the exact printing (MTG Arena syntax —
-Moxfield and most store decklist finders understand it); lines without a
-code use any printing.
+    listing_body = f"""`(SET) 123` pins the exact printing this list is
+costed against (MTG Arena syntax — Moxfield and most store decklist finders
+understand it). Search a name without its id and you'll be quoted the wrong
+printing. A line appears bare only when no printing could be priced.
 
 ```
 {listing}

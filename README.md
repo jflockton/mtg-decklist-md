@@ -224,13 +224,18 @@ always describe the same card. **Every printing of every card is considered**, h
 the card, and any card Cardmarket has no price for is reported as a count rather than quietly
 left out of the total.
 
-Two kinds of printing are skipped, because "cheapest" has to mean *cheapest you could
-actually buy and play*:
+**Every line carries its `(SET) 123` id**, including the cards whose own printing was already
+the cheapest. Without one you're told "Smoke, €4.90" and then handed a search listing Alpha at
+€499 and Beta at €90 — the id is the only thing that gets you to the card being quoted.
 
-- **Gold- and silver-bordered cards** — World Championship decks, Pro Tour Collector Sets and
-  Collectors' Edition. They're replicas, illegal in every format, and routinely among a
-  card's cheapest listings. Five of Birds of Paradise's six cheapest rows are championship
-  cards.
+Two kinds of printing are skipped, because "cheapest" has to mean *cheapest you could actually
+buy and play*:
+
+- **Collector sets** — World Championship decks, Collectors' Edition, Pro Tour Collector Sets,
+  30th Anniversary. Replicas, illegal in every format, and routinely among a card's cheapest
+  listings: five of Birds of Paradise's six cheapest rows are championship cards, and Smoke's
+  cheapest printing of all is an Intl. Collectors' Edition. Scryfall's `legalities` won't catch
+  these — legality belongs to the card, not the printing, so every one of them reads "legal".
 - **Printings priced in only one market** — a EUR price with no USD price at all means one
   lonely European listing and nothing to corroborate it. That's how a €3.00 *Summer Magic*
   Birds of Paradise appears, for a 1994 test print worth thousands.
