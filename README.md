@@ -37,6 +37,10 @@ cp .env.example .env        # then edit VAULT_OUTPUT_DIR
 python mtg_deck_importer.py "My Krenko Deck.txt"
 ```
 
+The first run that prices anything downloads Scryfall's daily card export (~80 MB, about ten
+seconds) into a local database — see [the reference DB](#the-reference-db). Everything after
+that is offline card lookups.
+
 | Setting | Required | What it does |
 |---------|:--------:|--------------|
 | `VAULT_OUTPUT_DIR` | ✅ | Folder in your Obsidian vault where notes, `Attachments/` and the index are written. |
@@ -216,9 +220,20 @@ GBP cells show a dash.
 
 The 💸 **Cheapest Build** picks each card's cheapest Cardmarket printing — which is also the
 one it pins with `(SET) 123` — so the version you're told to buy and the price you're quoted
-always describe the same card. Cards at or below ~€0.50 keep the deck's own printing; there's
-nothing meaningful to save on pennies. Any card Cardmarket has no price for is reported as a
-count rather than quietly left out of the total.
+always describe the same card. **Every printing of every card is considered**, however cheap
+the card, and any card Cardmarket has no price for is reported as a count rather than quietly
+left out of the total.
+
+Two kinds of printing are skipped, because "cheapest" has to mean *cheapest you could
+actually buy and play*:
+
+- **Gold- and silver-bordered cards** — World Championship decks, Pro Tour Collector Sets and
+  Collectors' Edition. They're replicas, illegal in every format, and routinely among a
+  card's cheapest listings. Five of Birds of Paradise's six cheapest rows are championship
+  cards.
+- **Printings priced in only one market** — a EUR price with no USD price at all means one
+  lonely European listing and nothing to corroborate it. That's how a €3.00 *Summer Magic*
+  Birds of Paradise appears, for a 1994 test print worth thousands.
 
 <details>
 <summary>Where ManaPool fits, and why there's no GBP source</summary>
@@ -250,8 +265,28 @@ the deck's cards that source actually priced.
 | `YYYY-MM-DD_MTG-Collection_<name>.md` | `--set` collection checklists |
 | `.price-history.json` | Dated price snapshots behind the 📉 Price History tables |
 
-Lookups are cached in the repo's `.cache/` — Scryfall printings for 3 days, set codes for 7 —
-so only the first run after a quiet spell is slow.
+Nothing here is the card database — that lives in the repo's `.cache/`, not your vault, so it
+never syncs to Dropbox.
+
+### The reference DB
+
+Card lookups don't go to the network. The repo's `.cache/` holds a SQLite copy of **every
+paper printing** (~107,000 of them, ~60 MB), rebuilt from
+[Scryfall's daily bulk export](https://scryfall.com/docs/api/bulk-data) whenever it's over a
+day old — an ~80 MB download that takes about ten seconds.
+
+That's what makes finding a card's cheapest printing an indexed query instead of a
+rate-limited search per card. Before it, a full `--recheck` spent minutes being throttled and
+gave up after Scryfall's first page of 175 printings; basics have nearly 800.
+
+| Command | What it does |
+|---------|--------------|
+| *(nothing)* | The DB refreshes itself once a day, on any command that prices something |
+| `--refresh-db` | Rebuild now, even if it's fresh. On its own, just rebuilds and exits |
+| `--no-bulk` | Skip the DB and use the API — slower and rate-limited, but no download |
+
+`--reimport`, `--list`, `--index`, `--delete`, `--reindex` and `--brief` never trigger a
+refresh, since none of them price anything.
 
 <details>
 <summary>Everything inside a deck note, in the order it appears</summary>
@@ -313,6 +348,9 @@ flag too.
 | `--set-reset` | Discard existing ticks and rederive them from the collection file. |
 | **Analysis** | |
 | `--brief [id]` | Write a compact analysis brief into `_analysis-briefs/`: deck shape, role groups, the full list, and oracle text for cards recent enough that a model may not know them. Input for `/analyse-deck`. |
+| **Reference DB** | |
+| `--refresh-db` | Rebuild the local Scryfall card DB now rather than waiting for its daily refresh. On its own, rebuilds and exits. |
+| `--no-bulk` | Skip the DB for this run and look printings up through the API instead — slower and rate-limited, but avoids the ~80 MB download. |
 
 > ⚠️ `--delete` **permanently removes files** — there's no recycle bin. If your vault is in
 > Dropbox/iCloud/git, they're recoverable from its version history. `--reindex` **changes

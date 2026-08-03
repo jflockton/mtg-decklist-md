@@ -21,6 +21,13 @@ Prices
     describe the same card. ManaPool's live US listings are used only by
     --collection-value.
 
+Reference DB
+    Every paper printing lives in a local SQLite file rebuilt daily from
+    Scryfall's bulk export (.cache/scryfall.sqlite3, ~60 MB). Printing lookups
+    are indexed queries rather than one rate-limited search per card, which is
+    what used to make a --recheck take minutes. --refresh-db rebuilds it on
+    demand; --no-bulk skips it and uses the API.
+
 Contract with the vault
     VAULT_OUTPUT_DIR (a .env file next to this script — see .env.example) sets
     the output folder. Every deck note carries a stable deck-id in its
@@ -34,10 +41,12 @@ Contract with the vault
 
 import argparse
 import atexit
+import gzip
 import json
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import time
 from datetime import date
@@ -191,43 +200,231 @@ def report_collection_state(out_dir: Path, consequence: str) -> dict[str, int]:
 
 
 _card_info_cache: dict[str, dict] = {}
-_prints_cache_loaded = False
-_prints_cache_dirty = False
 _prints_fetched = 0
-PRINTS_CACHE = SCRIPT_DIR / ".cache" / "scryfall_prints.json"
-PRINTS_TTL = 72 * 3600  # prices drift slowly; 3 days is fine for budget hints
+
+# ---------------------------------------------------------------------------
+# Scryfall bulk reference DB
+#
+# Every printing of every paper card in one local SQLite file, rebuilt from
+# Scryfall's daily "default_cards" export. This replaces a per-card search
+# request (~0.5s each, rate-limited, and the thing that made a --recheck take
+# minutes) with an indexed query.
+#
+# It also fixes a correctness problem the old per-card cache could not: the
+# cheapest printing and the deck's own price now come from the same snapshot,
+# and every printing is considered rather than the first page of 175.
+# ---------------------------------------------------------------------------
+
+SCRYFALL_DB = SCRIPT_DIR / ".cache" / "scryfall.sqlite3"
+BULK_DATA_URL = "https://api.scryfall.com/bulk-data"
+DB_TTL = 24 * 3600  # Scryfall regenerates the export daily
+
+DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cards (
+  id               TEXT PRIMARY KEY,
+  name             TEXT NOT NULL,
+  face_name        TEXT,
+  flavor_name      TEXT,
+  set_code         TEXT NOT NULL,
+  set_name         TEXT NOT NULL DEFAULT '',
+  collector_number TEXT NOT NULL DEFAULT '',
+  rarity           TEXT NOT NULL DEFAULT '',
+  type_line        TEXT NOT NULL DEFAULT '',
+  cmc              REAL,
+  oracle_text      TEXT NOT NULL DEFAULT '',
+  image_uri        TEXT,
+  eur              REAL,
+  eur_foil         REAL,
+  usd              REAL,
+  usd_foil         REAL,
+  tix              REAL,
+  finishes         TEXT NOT NULL DEFAULT '[]',
+  released_at      TEXT,
+  layout           TEXT NOT NULL DEFAULT 'normal',
+  frame_effects    TEXT NOT NULL DEFAULT '[]',
+  full_art         INTEGER NOT NULL DEFAULT 0,
+  border_color     TEXT NOT NULL DEFAULT '',
+  promo            INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+"""
+
+DB_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_name ON cards (name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_face ON cards (face_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_flavor ON cards (flavor_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_set ON cards (set_code);
+"""
+
+_bulk_enabled = True   # --no-bulk turns the DB off and falls back to the API
+_bulk_force = False    # --refresh-db rebuilds even if the DB is fresh
 
 
-def _load_prints_cache() -> None:
-    global _prints_cache_loaded
-    _prints_cache_loaded = True
+def _price(p: dict, key: str) -> float | None:
+    v = p.get(key)
     try:
-        raw = json.loads(PRINTS_CACHE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return  # missing or corrupt cache — just start empty
-    now = time.time()
-    for key, val in raw.items():
-        if now - val.get("ts", 0) < PRINTS_TTL:
-            _card_info_cache[key] = {"aliases": set(val["aliases"]),
-                                     "canonical": val["canonical"],
-                                     "cheapest": val["cheapest"],
-                                     "ts": val["ts"]}
+        return float(v) if v else None
+    except (TypeError, ValueError):
+        return None
 
 
-def _save_prints_cache() -> None:
-    if not _prints_cache_dirty:
-        return
+def _bulk_row(c: dict) -> tuple | None:
+    """One Scryfall card object -> a row, or None for cards we never price
+    (digital-only printings can't be bought in paper).
+    """
+    games = c.get("games") or ["paper"]
+    if "paper" not in games:
+        return None
+    name = c["name"]
+    faces = c.get("card_faces") or []
+    uris = c.get("image_uris") or (faces[0].get("image_uris") if faces else None)
+    p = c.get("prices") or {}
+    return (
+        c["id"], name,
+        name.split("//")[0].strip() if "//" in name else None,
+        c.get("flavor_name"),
+        c.get("set", "").lower(), c.get("set_name", ""),
+        str(c.get("collector_number", "")), c.get("rarity", ""),
+        c.get("type_line", ""), c.get("cmc"),
+        c.get("oracle_text") or " // ".join(
+            f.get("oracle_text", "") for f in faces),
+        (uris or {}).get("small"),
+        _price(p, "eur"), _price(p, "eur_foil"),
+        _price(p, "usd"), _price(p, "usd_foil"), _price(p, "tix"),
+        json.dumps(c.get("finishes") or []), c.get("released_at"),
+        c.get("layout", "normal"), json.dumps(c.get("frame_effects") or []),
+        1 if c.get("full_art") else 0, c.get("border_color", ""),
+        1 if c.get("promo") else 0,
+    )
+
+
+def _bulk_download_info() -> tuple[str, str]:
+    """(download URI, updated_at) for the default_cards export. Scryfall moved
+    the payload to gzipped JSONL and the listing to pointers, so follow the
+    entry's own uri when the download fields aren't inlined.
+    """
+    r = http("GET", BULK_DATA_URL)
+    r.raise_for_status()
+    entry = next((d for d in r.json()["data"] if d["type"] == "default_cards"),
+                 None)
+    if entry is None:
+        raise RuntimeError("no default_cards entry in Scryfall's bulk-data listing")
+    if not (entry.get("jsonl_download_uri") or entry.get("download_uri")):
+        detail = http("GET", entry["uri"])
+        detail.raise_for_status()
+        entry = detail.json()
+    uri = entry.get("jsonl_download_uri") or entry.get("download_uri")
+    if not uri:
+        raise RuntimeError("no download URI in Scryfall's default_cards entry")
+    return uri, entry.get("updated_at", "")
+
+
+def _build_scryfall_db() -> None:
+    """Download the daily export and rebuild the reference DB.
+
+    Built to a .tmp file and renamed at the end, so an existing DB keeps
+    working if this dies halfway.
+    """
+    uri, updated_at = _bulk_download_info()
+    SCRYFALL_DB.parent.mkdir(exist_ok=True)
+    raw = SCRYFALL_DB.with_suffix(".download")
+    print("Scryfall:  downloading the daily card export (~80 MB, once a day)...")
+    with SESSION.get(uri, stream=True, timeout=300) as resp:
+        resp.raise_for_status()
+        got = 0
+        with raw.open("wb") as fh:
+            for chunk in resp.iter_content(1 << 20):
+                fh.write(chunk)
+                got += len(chunk)
+                if got % (20 << 20) < (1 << 20):
+                    print(f"Scryfall:  ...{got / 1e6:,.0f} MB")
+
+    tmp = SCRYFALL_DB.with_suffix(".tmp")
+    tmp.unlink(missing_ok=True)
+    db = sqlite3.connect(tmp)
     try:
-        PRINTS_CACHE.parent.mkdir(exist_ok=True)
-        out = {k: {"aliases": sorted(v["aliases"]), "canonical": v["canonical"],
-                   "cheapest": v["cheapest"], "ts": v.get("ts", time.time())}
-               for k, v in _card_info_cache.items()}
-        PRINTS_CACHE.write_text(json.dumps(out), encoding="utf-8")
-    except OSError:
-        pass
+        # Throwaway build — if it dies we rebuild from scratch, so durability
+        # buys nothing and costs a lot of time.
+        db.execute("PRAGMA journal_mode = OFF")
+        db.execute("PRAGMA synchronous = OFF")
+        db.executescript(DB_SCHEMA)
+        insert = ("INSERT OR REPLACE INTO cards VALUES ("
+                  + ",".join("?" * 24) + ")")
+        batch, total = [], 0
+        opener = gzip.open if uri.endswith(".gz") else open
+        with opener(raw, "rt", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip().rstrip(",")
+                if not line.startswith("{"):
+                    continue  # the legacy format wraps rows in a JSON array
+                row = _bulk_row(json.loads(line))
+                if row is None:
+                    continue
+                batch.append(row)
+                if len(batch) >= 5000:
+                    db.executemany(insert, batch)
+                    total += len(batch)
+                    batch = []
+        if batch:
+            db.executemany(insert, batch)
+            total += len(batch)
+        db.executescript(DB_INDEXES)
+        db.executemany("INSERT OR REPLACE INTO meta VALUES (?, ?)",
+                       [("updated_at", updated_at),
+                        ("built_at", str(int(time.time()))),
+                        ("cards", str(total))])
+        db.commit()
+    finally:
+        db.close()
+    raw.unlink(missing_ok=True)
+    SCRYFALL_DB.unlink(missing_ok=True)
+    tmp.replace(SCRYFALL_DB)
+    print(f"Scryfall:  reference DB built — {total:,} paper printings")
 
 
-atexit.register(_save_prints_cache)
+def _db_is_stale() -> bool:
+    if not SCRYFALL_DB.is_file():
+        return True
+    try:
+        db = sqlite3.connect(f"file:{SCRYFALL_DB}?mode=ro", uri=True)
+        try:
+            row = db.execute(
+                "SELECT value FROM meta WHERE key = 'built_at'").fetchone()
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return True
+    if not row:
+        return True
+    # A built_at in the future means a corrupted or hand-edited value; treat it
+    # as stale rather than letting it pin the DB as fresh forever.
+    age = time.time() - float(row[0])
+    return not (0 <= age < DB_TTL)
+
+
+@lru_cache(maxsize=1)
+def scryfall_db() -> sqlite3.Connection | None:
+    """The reference DB, rebuilt if missing or over a day old. Returns None
+    when --no-bulk is set or the build fails — every caller has an API path.
+    """
+    if not _bulk_enabled:
+        return None
+    try:
+        if _bulk_force or _db_is_stale():
+            _build_scryfall_db()
+    except (OSError, ValueError, RuntimeError, sqlite3.Error,
+            requests.RequestException) as exc:
+        if not SCRYFALL_DB.is_file():
+            print(f"Scryfall:  bulk DB unavailable ({exc}) — falling back to "
+                  "the API for this run")
+            return None
+        print(f"Scryfall:  bulk refresh failed ({exc}) — using the existing DB")
+    try:
+        db = sqlite3.connect(f"file:{SCRYFALL_DB}?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+        return db
+    except sqlite3.Error:
+        return None
 
 
 def scryfall_card_image(card: dict, size: str = "small") -> str | None:
@@ -242,6 +439,94 @@ def scryfall_card_image(card: dict, size: str = "small") -> str | None:
     return uris.get(size) if uris else None
 
 
+# Gold borders are World Championship and Pro Tour Collector Set replicas;
+# silver are the Un-sets and Collectors' Edition. Both are cheap, both turn up
+# near the top of a price-sorted list, and neither is legal to play.
+UNPLAYABLE_BORDERS = {"gold", "silver"}
+
+
+def _buyable(p: dict) -> bool:
+    """Is this printing one you could actually sleeve up and play?
+
+    Two ways a "cheapest printing" betrays you, and Birds of Paradise shows
+    both — its six cheapest rows are a Summer Magic and five World
+    Championship cards:
+
+    - It isn't playable. Gold-bordered championship decks are replicas, banned
+      everywhere, and often a card's cheapest listings. Scryfall's `legalities`
+      does NOT catch this: legality is a property of the card, not the
+      printing, so every Birds of Paradise reads "legal". The border does.
+    - Its price is fiction. Summer Magic is a 1994 test print worth thousands;
+      Cardmarket still shows €3.00. What these have in common is a EUR price
+      and no USD price at all — one lonely European listing with no second
+      market to corroborate it. Requiring both is blunt but effective.
+    """
+    return p.get("border") not in UNPLAYABLE_BORDERS \
+        and p.get("eur") is not None and p.get("usd") is not None
+
+
+def _pick_cheapest(priced: list[dict]) -> dict | None:
+    """The cheapest printing anyone could actually buy and play, from a list
+    sorted by EUR ascending.
+
+    Prefer a printing that passes _buyable. If none does — a card only ever
+    printed in an untraded set — fall back to the cheapest of what's left
+    rather than reporting no price at all.
+    """
+    if not priced:
+        return None
+    return next((p for p in priced if _buyable(p)), priced[0])
+
+
+def _prints_from_db(name: str, canonical: str | None) -> dict | None:
+    """Aliases and the cheapest printing straight out of the reference DB.
+
+    Every printing is considered — no page limit, and no price floor, because
+    an indexed query over 800 printings costs the same as one over 3.
+    """
+    db = scryfall_db()
+    if db is None:
+        return None
+    # Resolve to the canonical name first: a collection line may use a
+    # Universes Beyond skin name ("Loki's Double") or a double-faced card's
+    # front face ("Malakir Rebirth"), and we want ALL printings of the card
+    # behind it, not just the ones bearing that name.
+    if canonical is None:
+        row = db.execute(
+            "SELECT name FROM cards WHERE name = ? COLLATE NOCASE "
+            "OR flavor_name = ? COLLATE NOCASE OR face_name = ? COLLATE NOCASE "
+            "LIMIT 1", (name, name, name)).fetchone()
+        if row is None:
+            return None
+        canonical = row["name"]
+    rows = db.execute(
+        "SELECT name, flavor_name, set_name, set_code, collector_number, eur, "
+        "usd, image_uri, border_color FROM cards WHERE name = ? COLLATE NOCASE",
+        (canonical,)).fetchall()
+    if not rows:
+        return None
+    info = {"aliases": {name.lower(), canonical.lower()}, "canonical": canonical,
+            "cheapest": None, "ts": time.time()}
+    if "//" in canonical:
+        info["aliases"].add(canonical.split("//")[0].strip().lower())
+    priced = []
+    for r in rows:
+        if r["flavor_name"]:
+            info["aliases"].add(r["flavor_name"].lower())
+        if r["eur"] is None:
+            continue
+        priced.append({"eur": r["eur"], "usd": r["usd"], "set": r["set_name"],
+                       # the row knows its own set code, so the pin never
+                       # depends on a set-name lookup that could miss
+                       "set_code": r["set_code"],
+                       "num": r["collector_number"],
+                       "printed_as": r["flavor_name"] or r["name"],
+                       "img": r["image_uri"], "border": r["border_color"]})
+    priced.sort(key=lambda c: c["eur"])
+    info["cheapest"] = _pick_cheapest(priced)
+    return info
+
+
 def card_prints_info(name: str, canonical: str | None = None) -> dict:
     """One prints lookup per card, reused for two jobs: (a) every name the
     card can appear under — canonical plus Universes Beyond flavor names
@@ -249,20 +534,22 @@ def card_prints_info(name: str, canonical: str | None = None) -> dict:
     cheapest paper printing, since a flavor-named skin is the same card and
     the plain version is often cheaper.
 
-    Pass `canonical` when the exact Scryfall name is already known (the bulk
-    price fetch returns it) — that skips the name-resolution request and
-    halves the Scryfall traffic, which is what the rate limit actually bites.
+    Served from the local reference DB. The API path below is the fallback for
+    a card newer than the last DB refresh (or --no-bulk), and unlike the DB it
+    reads only Scryfall's first page of 175 printings.
     """
-    if not _prints_cache_loaded:
-        _load_prints_cache()
     key = name.lower()
     if key in _card_info_cache:
         return _card_info_cache[key]
-    global _prints_cache_dirty, _prints_fetched
-    _prints_cache_dirty = True
+    info = _prints_from_db(name, canonical)
+    if info is not None:
+        _card_info_cache[key] = info
+        return info
+
+    global _prints_fetched
     _prints_fetched += 1
     if _prints_fetched == 1:
-        print("Scryfall:  looking up printings (~0.5s per new card, cached 3 days)...")
+        print("Scryfall:  looking up printings via the API (~0.5s per card)...")
     elif _prints_fetched % 10 == 0:
         print(f"Scryfall:  ...{_prints_fetched} cards looked up")
     info = {"aliases": {key}, "canonical": name, "cheapest": None,
@@ -271,8 +558,6 @@ def card_prints_info(name: str, canonical: str | None = None) -> dict:
         r = http("GET", SCRYFALL_NAMED, params={"exact": name})
         if r.status_code == 200:
             canonical = r.json()["name"]
-        elif r.status_code != 404:  # throttled/5xx — don't cache the failure
-            info["ts"] = 0
     if canonical is not None:
         info["canonical"] = canonical
         info["aliases"].add(canonical.lower())
@@ -280,36 +565,33 @@ def card_prints_info(name: str, canonical: str | None = None) -> dict:
         # ("Malakir Rebirth") match the full "A // B" deck name
         if "//" in canonical:
             info["aliases"].add(canonical.split("//")[0].strip().lower())
-        s = http("GET", SCRYFALL_SEARCH,
-                 params={"q": f'!"{canonical}" game:paper',
-                         "unique": "prints"})
-        if s.status_code == 200:
-            best = None
-            for c in s.json().get("data", []):
+        url = SCRYFALL_SEARCH
+        params: dict | None = {"q": f'!"{canonical}" game:paper',
+                               "unique": "prints"}
+        priced = []
+        while url:
+            s = http("GET", url, params=params)
+            if s.status_code != 200:
+                break
+            j = s.json()
+            for c in j.get("data", []):
                 if c.get("flavor_name"):
                     info["aliases"].add(c["flavor_name"].lower())
                 eur = float(c["prices"]["eur"]) if c["prices"].get("eur") else None
-                usd = float(c["prices"]["usd"]) if c["prices"].get("usd") else None
-                if eur is None and usd is None:
+                if eur is None:
                     continue
-                # EUR-first ranking: we buy on Cardmarket, so prefer a printing
-                # that HAS a EUR price even if a USD-only one is nominally lower
-                rank = (eur if eur is not None else float("inf"),
-                        usd if usd is not None else float("inf"))
-                if best is None or rank < best[0]:
-                    best = (rank, {"eur": eur, "usd": usd, "set": c["set_name"],
-                                   "num": c["collector_number"],
-                                   "printed_as": c.get("flavor_name") or c["name"],
-                                   "img": scryfall_card_image(c)})
-            if best:
-                info["cheapest"] = best[1]
-        elif s.status_code != 404:  # throttled/5xx — retry it next run instead
-            info["ts"] = 0
+                priced.append({
+                    "eur": eur,
+                    "usd": float(c["prices"]["usd"]) if c["prices"].get("usd") else None,
+                    "set": c["set_name"], "set_code": c.get("set"),
+                    "num": c["collector_number"],
+                    "printed_as": c.get("flavor_name") or c["name"],
+                    "img": scryfall_card_image(c),
+                    "border": c.get("border_color", "")})
+            url, params = j.get("next_page"), None
+        priced.sort(key=lambda c: c["eur"])
+        info["cheapest"] = _pick_cheapest(priced)
     _card_info_cache[key] = info
-    # Long runs can be interrupted (Ctrl-C, crashes) — checkpoint the cache
-    # periodically so hundreds of slow lookups are never lost with the process
-    if _prints_fetched % 50 == 0:
-        _save_prints_cache()
     return info
 
 
@@ -961,12 +1243,29 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
 def fetch_printing_prices(entries: list[dict]) -> dict[tuple[str, str], dict]:
     """Prices for exact printings, keyed (set code, collector number).
 
-    Scryfall's collection endpoint takes set/collector-number identifiers, so a
-    whole shelf of pinned cards costs one request per 75 — far better than a
-    lookup each. Foil prices come back in the same payload.
+    Served from the reference DB, which is keyed on exactly this pair. The API
+    path below is the fallback: its collection endpoint takes set/collector-
+    number identifiers, so a whole shelf costs one request per 75.
     """
     out: dict[tuple[str, str], dict] = {}
     want = sorted({(e["set"], e["num"]) for e in entries})
+    db = scryfall_db()
+    if db is not None:
+        for set_code, num in want:
+            r = db.execute(
+                "SELECT name, eur, usd, eur_foil, usd_foil FROM cards "
+                "WHERE set_code = ? AND collector_number = ?",
+                (set_code.lower(), str(num))).fetchone()
+            if r is None:
+                continue
+            out[(set_code.lower(), str(num))] = {
+                "name": r["name"], "eur": r["eur"], "usd": r["usd"],
+                "eur_foil": r["eur_foil"], "usd_foil": r["usd_foil"],
+                "mp": manapool_index().get(r["name"].lower()),
+            }
+        want = [w for w in want if (w[0].lower(), str(w[1])) not in out]
+        if not want:
+            return out
     for i in range(0, len(want), 75):
         chunk = want[i:i + 75]
         r = http("POST", SCRYFALL_COLLECTION,
@@ -1128,13 +1427,12 @@ def _usd_cell(amount):
 
 
 def _sane_cheaper(cheap_eur, deck_eur):
-    """Guard against junk market data: a 'cheapest printing' under 5% of the
-    deck version's price on a card worth over €1 (e.g. a €0.02 Summer Magic
-    Wrath of God) is a data error, not a bargain.
+    """Is this printing actually worth swapping to? Junk-data protection now
+    lives in _pick_cheapest, which judges a printing against its siblings
+    rather than against the deck's version — so all that's left here is
+    "cheaper by more than rounding".
     """
     if cheap_eur is None:
-        return False
-    if deck_eur and deck_eur > 1 and cheap_eur < deck_eur * 0.05:
         return False
     return deck_eur is None or cheap_eur < deck_eur - 0.005
 
@@ -1162,10 +1460,14 @@ def budget_choices(decklist: list[tuple[int, str]],
                    prices: dict[str, dict]) -> dict[str, dict]:
     """For every deck card, the cheapest functionally-identical version to
     buy: {lowercased deck name: {printed, set_name, set_code, eur, img,
-    deck_eur, changed}}. Cards under €0.50 keep the deck's own version (there
-    is nothing meaningful to save on pennies) — the single source of truth
-    used by the Shopping List, Cheaper Printings and Cheapest Build sections,
-    so their totals always agree.
+    deck_eur, changed}} — the single source of truth used by the Shopping
+    List, Cheaper Printings and Cheapest Build sections, so their totals
+    always agree.
+
+    Every card is checked, however cheap. The old €0.50 floor existed because
+    each lookup cost an API call; against the local reference DB a €0.02
+    Guildgate costs the same as a €30 fetchland, and skipping the cheap ones
+    was quietly leaving money on the table.
 
     Everything here is Cardmarket EUR: it is the market the pinned `(SET) 123`
     printing is actually priced in, so the chosen version and its price always
@@ -1178,16 +1480,16 @@ def budget_choices(decklist: list[tuple[int, str]],
         c = {"printed": name, "set_name": None, "set_code": None,
              "eur": deck_eur, "img": p.get("img"),
              "deck_eur": deck_eur, "changed": False}
-        if (deck_eur or p.get("usd") or 0) > 0.50:
-            ch = card_prints_info(name, p.get("name")).get("cheapest")
-            if ch and _sane_cheaper(ch["eur"], deck_eur):
-                printed = ch["printed_as"] \
-                    if ch["printed_as"].lower() != name.lower() else name
-                c.update(printed=printed, set_name=ch["set"],
-                         set_code=set_code_map().get(ch["set"].lower()),
-                         num=ch.get("num"),
-                         eur=ch["eur"], img=ch.get("img") or c["img"],
-                         changed=True)
+        ch = card_prints_info(name, p.get("name")).get("cheapest")
+        if ch and _sane_cheaper(ch["eur"], deck_eur):
+            printed = ch["printed_as"] \
+                if ch["printed_as"].lower() != name.lower() else name
+            c.update(printed=printed, set_name=ch["set"],
+                     set_code=(ch.get("set_code")
+                               or set_code_map().get(ch["set"].lower())),
+                     num=ch.get("num"),
+                     eur=ch["eur"], img=ch.get("img") or c["img"],
+                     changed=True)
         choices[name.lower()] = c
     return choices
 
@@ -1531,7 +1833,38 @@ def fetch_set_printings(codes: list[str]) -> list[dict]:
     frame) earns its own line.
     """
     out: list[dict] = []
+    db = scryfall_db()
     for code in codes:
+        if db is not None:
+            rows = db.execute(
+                "SELECT name, set_code, collector_number, rarity, finishes, "
+                "eur, usd, layout, frame_effects, full_art, border_color, promo "
+                "FROM cards WHERE set_code = ?", (code.lower(),)).fetchall()
+            if rows:
+                for r in rows:
+                    disp = r["name"]
+                    if " // " in disp:
+                        faces = [f.strip() for f in disp.split(" // ")]
+                        if len(set(faces)) == 1:
+                            disp = faces[0]
+                    finishes = json.loads(r["finishes"])
+                    out.append({
+                        "name": disp,
+                        "set": r["set_code"],
+                        "num": str(r["collector_number"]),
+                        "treatment": _treatment({
+                            "layout": r["layout"],
+                            "frame_effects": json.loads(r["frame_effects"]),
+                            "full_art": bool(r["full_art"]),
+                            "border_color": r["border_color"],
+                            "promo": bool(r["promo"])}),
+                        "rarity": r["rarity"] or "common",
+                        "foil_only": finishes == ["foil"],
+                        "gbp": _card_gbp(r["eur"], r["usd"], fx_rates()),
+                    })
+                print(f"Set:       {code} — {len(rows)} printings")
+                continue
+            print(f"Set:       '{code}' not in the reference DB — asking the API")
         url: str | None = SCRYFALL_SEARCH
         params: dict | None = {"q": f"set:{code}", "unique": "prints",
                                "include_extras": "true",
@@ -2999,6 +3332,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--index", action="store_true",
         help="regenerate the _Decks.md master index from the notes' current "
              "frontmatter (no network; also runs after every import/recheck)")
+    parser.add_argument(
+        "--refresh-db", action="store_true", dest="refresh_db",
+        help="rebuild the local Scryfall reference DB even if it is still "
+             "fresh (it otherwise refreshes itself once a day)")
+    parser.add_argument(
+        "--no-bulk", action="store_true", dest="no_bulk",
+        help="skip the reference DB and look printings up through the API "
+             "instead — slower and rate-limited, but no ~80 MB download")
     return parser
 
 
@@ -3025,6 +3366,15 @@ def main() -> None:
             pass
     parser = build_arg_parser()
     args = parser.parse_args()
+
+    global _bulk_enabled, _bulk_force
+    _bulk_enabled = not args.no_bulk
+    _bulk_force = args.refresh_db
+    if args.refresh_db and not any(
+            [args.source, args.recheck, args.reimport, args.set_codes,
+             args.collection, args.merge_collection, args.collection_value]):
+        scryfall_db()  # --refresh-db on its own: just rebuild and stop
+        return
 
     if args.list_ids:
         list_decks(resolve_out_dir())
