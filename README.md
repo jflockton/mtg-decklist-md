@@ -224,21 +224,19 @@ always describe the same card. **Every printing of every card is considered**, h
 the card, and any card Cardmarket has no price for is reported as a count rather than quietly
 left out of the total.
 
-**Every line carries its `(SET) 123` id**, including the cards whose own printing was already
-the cheapest. Without one you're told "Smoke, €4.90" and then handed a search listing Alpha at
-€499 and Beta at €90 — the id is the only thing that gets you to the card being quoted.
+**Every line of both buy lists carries its `(SET) 123` id** — including cards whose own
+printing was already the cheapest, since those need it most. Without an id you're told
+"Smoke, €3.05" and then handed a search listing Alpha at €499 and Beta at €90. The id is the
+only thing that gets you to the card being quoted.
 
-Two kinds of printing are skipped, because "cheapest" has to mean *cheapest you could actually
-buy and play*:
+Cheapest means cheapest, collector printings included. If an Intl. Collectors' Edition *Smoke*
+is the cheapest way to own a Smoke, that's what you're pointed at — whether a given printing
+suits your playgroup is your call, not the script's.
 
-- **Collector sets** — World Championship decks, Collectors' Edition, Pro Tour Collector Sets,
-  30th Anniversary. Replicas, illegal in every format, and routinely among a card's cheapest
-  listings: five of Birds of Paradise's six cheapest rows are championship cards, and Smoke's
-  cheapest printing of all is an Intl. Collectors' Edition. Scryfall's `legalities` won't catch
-  these — legality belongs to the card, not the printing, so every one of them reads "legal".
-- **Printings priced in only one market** — a EUR price with no USD price at all means one
-  lonely European listing and nothing to corroborate it. That's how a €3.00 *Summer Magic*
-  Birds of Paradise appears, for a 1994 test print worth thousands.
+The one thing skipped is a **price with nothing behind it**: a EUR price and no USD price at
+all is one lonely European listing with no second market to corroborate it. That's how a €3.00
+*Summer Magic* Birds of Paradise turns up, for a 1994 test print worth thousands. Requiring
+both markets is blunt, but it's the difference between a bargain and a card nobody is selling.
 
 <details>
 <summary>Where ManaPool fits, and why there's no GBP source</summary>

@@ -441,34 +441,22 @@ def scryfall_card_image(card: dict, size: str = "small") -> str | None:
     return uris.get(size) if uris else None
 
 
-# Scryfall files World Championship decks, Collectors' Edition, Intl.
-# Collectors' Edition, Pro Tour Collector Sets and 30th Anniversary under
-# "memorabilia": replicas and collector curios, not legal to play, and
-# routinely a card's cheapest listings. Smoke's cheapest printing is an Intl.
-# Collectors' Edition; its cheapest playable one costs 60% more.
-UNPLAYABLE_SET_TYPES = {"memorabilia"}
-UNPLAYABLE_BORDERS = {"gold", "silver"}
-
-
 def _buyable(p: dict) -> bool:
-    """Is this printing one you could actually sleeve up and play?
+    """Is this a price you could actually turn up and pay?
 
-    Three ways a "cheapest printing" betrays you:
+    Cheapest means cheapest — collector printings included. Collectors'
+    Edition, World Championship decks and 30th Anniversary are all fair game
+    if they're the cheapest way to get the card; whether one suits a given
+    playgroup is a call for the person buying, not for this script.
 
-    - It's a collector replica. Caught by set type, not by Scryfall's
-      `legalities` — legality belongs to the card, not the printing, so every
-      Birds of Paradise reads "legal" including the five World Championship
-      ones among its six cheapest rows. Border colour alone doesn't catch it
-      either: Collectors' Edition is black-bordered.
-    - Its price is fiction. Summer Magic is a 1994 test print worth thousands;
-      Cardmarket still shows €3.00 for its Birds of Paradise. What these have
-      in common is a EUR price and no USD price at all — one lonely European
-      listing with no second market to corroborate it. Requiring both is
-      blunt but effective.
+    The one thing still filtered is a price with nothing behind it. Summer
+    Magic is a 1994 test print worth thousands, yet Cardmarket shows €3.00 for
+    its Birds of Paradise. What gives those away is a EUR price with no USD
+    price at all — one lonely European listing and no second market to
+    corroborate it. Requiring both is blunt, but it is the difference between
+    a bargain and a card nobody is selling.
     """
-    return p.get("set_type") not in UNPLAYABLE_SET_TYPES \
-        and p.get("border") not in UNPLAYABLE_BORDERS \
-        and p.get("eur") is not None and p.get("usd") is not None
+    return p.get("eur") is not None and p.get("usd") is not None
 
 
 def _pick_cheapest(priced: list[dict]) -> dict | None:
@@ -635,6 +623,7 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
         totals["usd"] += (p.get("usd") or 0) * need
         missing.append({"need": need, "have": have, "name": name,
                         "eur": p.get("eur"), "usd": p.get("usd"),
+                        "set": p.get("set"), "num": p.get("num"),
                         "info": info})
     missing.sort(key=lambda c: c["eur"] or 0, reverse=True)
     return {"missing": missing, "owned_rows": owned_rows, "totals": totals,
@@ -1214,6 +1203,9 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
                 "eur": float(p["eur"]) if p.get("eur") else None,
                 "usd": float(p["usd"]) if p.get("usd") else None,
                 "tix": float(p["tix"]) if p.get("tix") else None,
+                # which printing this price is for, so a buy list can name it
+                "set": card.get("set"),
+                "num": str(card.get("collector_number", "")),
                 "img": scryfall_card_image(card),
                 # for 📊 Deck Shape and --brief — no extra requests
                 "type": card.get("type_line", ""),
@@ -1242,6 +1234,7 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
                 "eur": cheap.get("eur"),
                 "usd": cheap.get("usd"),
                 "tix": entry["tix"] if entry else None,
+                "set": cheap.get("set_code"), "num": cheap.get("num"),
                 "img": cheap.get("img") or (entry or {}).get("img"),
             }
     return prices
@@ -2202,8 +2195,11 @@ def render_buy_section(buy: dict, collection_name: str, rates: dict | None,
         for qty, name in sorted(buy["owned_rows"], key=lambda r: r[1].lower())
     ]
     table = "\n".join(rows)
+    # Pin the printing these prices are for. Without it "1 Smoke" sends you to
+    # a search where the cheapest hit is nothing like the €3.05 quoted here.
     listing = "\n".join(
-        f"{m['need']} {m['name']}"
+        _choice_line(m["need"], {"printed": m["name"], "set_code": m.get("set"),
+                                 "num": m.get("num")}, m["name"])
         for m in sorted(buy["missing"], key=lambda m: m["name"].lower()))
     return f"""## 🛒 Cards to Complete the Deck
 
@@ -2216,7 +2212,8 @@ Buy the **{len(buy['missing'])}** missing card(s) ≈ **€{buy["totals"]["eur"]
 
 ### 📋 Buy List (copy-paste)
 
-Just the missing cards, any printing:
+The missing cards at the printings priced above — `(SET) 123` pins each one,
+so what you're quoted is what you find:
 
 ```
 {listing}
