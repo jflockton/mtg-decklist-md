@@ -265,7 +265,7 @@ the deck's cards that source actually priced.
 | `_Decks.md` | Auto-generated master index of every deck — never edit by hand |
 | `imports/` | Archived `.txt` decklists, so any machine can re-import |
 | `_analysis-briefs/` | `--brief` output |
-| `<name>.md` | `--set` collection checklists |
+| `_Collection - <name>.md` | `--set` collection checklists (sorted to the top) |
 | `.price-history.json` | Dated price snapshots behind the 📉 Price History tables |
 
 Nothing here is the card database — that lives in the repo's `.cache/`, not your vault, so it

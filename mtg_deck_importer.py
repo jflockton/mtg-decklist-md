@@ -1751,13 +1751,13 @@ SET_PRESETS["spider-man"] = SET_PRESETS["spm"] = SET_PRESETS["spiderman"]
 
 def collection_notes(out_dir: Path) -> list[Path]:
     """Every set-collection checklist note in the vault, found by its
-    `set-codes:` frontmatter rather than a filename pattern so notes rename
-    freely. `_`-prefixed index/living files and deck notes (no set-codes) are
-    never collections.
+    `set-codes:` frontmatter rather than a filename pattern — so notes rename
+    freely, including a leading `_Collection - ` a user adds to sort them to the
+    top. Index/living files (`_Decks.md`, `_Collection.md`, `_To-Buy.md`) carry
+    no `set-codes:`, so they're never mistaken for collections.
     """
     return [n for n in sorted(out_dir.glob("*.md"))
-            if not n.name.startswith("_")
-            and re.search(r"^set-codes:", n.read_text(encoding="utf-8"), re.M)]
+            if re.search(r"^set-codes:", n.read_text(encoding="utf-8"), re.M)]
 
 
 def _note_set_codes(note: Path) -> list[str]:
@@ -1769,8 +1769,12 @@ def _note_set_codes(note: Path) -> list[str]:
 
 
 def _note_label(note: Path) -> str:
-    """The label a checklist note was created with (from its filename)."""
-    return note.stem.split("_MTG-Collection_", 1)[-1]
+    """The checklist note's label — its filename minus any organising prefix:
+    a leading `_Collection - ` (added to sort it to the top) or a legacy dated
+    `_MTG-Collection_`.
+    """
+    stem = note.stem.split("_MTG-Collection_", 1)[-1]
+    return re.sub(r"^_Collection\s*-\s*", "", stem)
 
 
 def resolve_set_target(out_dir: Path, arg: str) -> tuple[list[str], str | None]:
@@ -1959,7 +1963,7 @@ def set_collection(out_dir: Path, codes: list[str], label: str | None = None,
     name = label or ", ".join(c.upper() for c in codes)
     if note is None:
         safe = ILLEGAL_FILENAME_CHARS.sub("", name)
-        note = out_dir / f"{safe}.md"
+        note = out_dir / f"_Collection - {safe}.md"
     ticked = set() if reset else _existing_ticks(note)
 
     _, coll_path, _owned = collection_state(out_dir)
