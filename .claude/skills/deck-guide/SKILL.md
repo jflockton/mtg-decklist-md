@@ -15,8 +15,9 @@ script cannot generate.
    `mtg_deck_importer.py`).
 2. The argument is either a deck id (run
    `python mtg_deck_importer.py --list` to resolve it) or a fragment of the
-   commander/deck name — match it case-insensitively against the
-   `????-??-??_MTG_*.md` filenames and `deck-name:` frontmatter.
+   commander/deck name — match it case-insensitively against the deck-note
+   filenames (now the bare deck name, e.g. `Brago, King Eternal.md`) and the
+   `deck-name:` frontmatter.
 3. If it matches nothing or more than one note, list the candidates and stop.
 
 ## What to read before writing

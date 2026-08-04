@@ -35,8 +35,8 @@ Contract with the vault
     Whatever you write under the review headings is preserved through every
     rebuild — the generated data around it is what gets refreshed.
 
-    Output note:  YYYY-MM-DD_MTG_<Commander Name>.md
-    Output image: Attachments/YYYY-MM-DD_MTG_<Commander Name>.jpg
+    Output note:  <Deck Name>.md
+    Output image: Attachments/<Deck Name>.jpg
 """
 
 import argparse
@@ -1734,8 +1734,6 @@ def render_deck_shape(shape: dict) -> str:
 # premium set runs to five figures, which isn't a collection, it's a mortgage.
 # ---------------------------------------------------------------------------
 
-COLLECTION_NOTE_GLOB = "????-??-??_MTG-Collection_*.md"
-
 # Shorthands for "the whole of product X", because nobody should have to retype
 # eight set codes to refresh a list. Key → (set codes, default label).
 SET_PRESETS = {
@@ -1752,8 +1750,14 @@ SET_PRESETS["spider-man"] = SET_PRESETS["spm"] = SET_PRESETS["spiderman"]
 
 
 def collection_notes(out_dir: Path) -> list[Path]:
-    """Every set-collection checklist note in the vault."""
-    return sorted(out_dir.glob(COLLECTION_NOTE_GLOB))
+    """Every set-collection checklist note in the vault, found by its
+    `set-codes:` frontmatter rather than a filename pattern so notes rename
+    freely. `_`-prefixed index/living files and deck notes (no set-codes) are
+    never collections.
+    """
+    return [n for n in sorted(out_dir.glob("*.md"))
+            if not n.name.startswith("_")
+            and re.search(r"^set-codes:", n.read_text(encoding="utf-8"), re.M)]
 
 
 def _note_set_codes(note: Path) -> list[str]:
@@ -1955,10 +1959,7 @@ def set_collection(out_dir: Path, codes: list[str], label: str | None = None,
     name = label or ", ".join(c.upper() for c in codes)
     if note is None:
         safe = ILLEGAL_FILENAME_CHARS.sub("", name)
-        note = out_dir / f"{date.today().isoformat()}_MTG-Collection_{safe}.md"
-        for prior in sorted(out_dir.glob(f"????-??-??_MTG-Collection_{safe}.md")):
-            note = prior
-            break
+        note = out_dir / f"{safe}.md"
     ticked = set() if reset else _existing_ticks(note)
 
     _, coll_path, _owned = collection_state(out_dir)
@@ -2583,12 +2584,15 @@ def _is_deck_note(text: str) -> bool:
 
 
 def deck_notes(out_dir: Path) -> list[Path]:
-    """Every real deck note in the vault, in filename order — the MTG-named
-    files that are actually decks (see _is_deck_note), so unrelated notes that
-    happen to match the naming pattern never leak into the deck handling.
+    """Every real deck note in the vault, in filename order — the notes that are
+    actually decks (see _is_deck_note), identified by their frontmatter rather
+    than any filename pattern, so a note keeps its identity whatever it's called.
+    Index / living files (leading `_`) are skipped up front; collection notes
+    fall out naturally because they carry no `deck-url`/`deck-id` frontmatter.
     """
-    return [n for n in sorted(out_dir.glob("????-??-??_MTG_*.md"))
-            if _is_deck_note(n.read_text(encoding="utf-8"))]
+    return [n for n in sorted(out_dir.glob("*.md"))
+            if not n.name.startswith("_")
+            and _is_deck_note(n.read_text(encoding="utf-8"))]
 
 
 def _insert_deck_id(text: str, did: int) -> str:
@@ -3034,25 +3038,33 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
     # A commander can have several builds (precon + enhanced, etc.). A note is
     # the SAME deck if its deck-url or deck-name matches; same-commander notes
     # for a different build get a " - <deck name>" suffix instead of colliding.
-    match = None
-    for candidate in sorted(out_dir.glob(f"????-??-??_MTG_{safe_name}*.md")):
+    # Notes are matched by frontmatter, never by filename, so a renamed note is
+    # found rather than orphaned into a duplicate. deck-url is exact and unique,
+    # so it wins outright; deck-name is only a fallback (two different decks can
+    # share a name, and without the old commander-scoped filename to lean on a
+    # name clash must never hijack the match).
+    match = url_match = name_match = None
+    for candidate in deck_notes(out_dir):
         text = candidate.read_text(encoding="utf-8")
         url_m = re.search(r"^deck-url: (.+)$", text, re.M)
         name_m = (re.search(r"^deck-name: (.+)$", text, re.M)
                   or re.search(r"^# 🃏 (.+)$", text, re.M))
-        if (url_m and url_m.group(1).strip() == deck_url) or \
-           (name_m and name_m.group(1).strip().lower() == deck["name"].lower()):
-            match = candidate
+        if url_m and url_m.group(1).strip() == deck_url:
+            url_match = candidate
             break
+        if name_match is None and name_m and \
+           name_m.group(1).strip().lower() == deck["name"].lower():
+            name_match = candidate
+    match = url_match or name_match
     if match and not force:
         sys.exit(f"Note already exists (use --force to overwrite): {match}")
     if match:
         note_path = match
     else:
-        others = list(out_dir.glob(f"????-??-??_MTG_{safe_name}*.md"))
+        others = list(out_dir.glob(f"{safe_name}*.md"))
         base = safe_name if not others else \
             f"{safe_name} - {ILLEGAL_FILENAME_CHARS.sub('', deck['name'])}"
-        note_path = out_dir / f"{date.today().isoformat()}_MTG_{base}.md"
+        note_path = out_dir / f"{base}.md"
     stem = note_path.stem
 
     # Keep the note's id: use the passed id, else the matched note's own, else

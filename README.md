@@ -18,8 +18,8 @@ Commander: Doctor Doom, King of Latveria
 Cards:     100 (88 unique)
 Value:     ~EUR 141.02 / GBP 120.66 / USD 150.11 / TIX 62.30
 Owned:     88/88 cards — to buy: 0 (~EUR 0.00 / ~EUR 0.00 at cheapest versions)
-Note:      ...\2026-07-19_MTG_Doctor Doom, King of Latveria.md
-Artwork:   ...\Attachments\2026-07-19_MTG_Doctor Doom, King of Latveria.jpg
+Note:      ...\Doctor Doom, King of Latveria.md
+Artwork:   ...\Attachments\Doctor Doom, King of Latveria.jpg
 ```
 
 Run it again next month and it re-prices the lot, charts the trend, and shouts when a card
@@ -102,10 +102,10 @@ into `imports/` inside your vault, so any machine with the vault can re-import i
 An existing note is **never overwritten without `--force`**, and even then everything you've
 written in the review sections is preserved — the rebuild refreshes the data *around* your
 notes. A note counts as the *same deck* when its `deck-url` or `deck-name` matches, whatever
-the import date, and `--force` updates it in place keeping the original dated filename.
+the import date — matched by frontmatter, not filename — and `--force` updates it in place keeping its existing filename.
 
-**Multiple builds per commander** are fine. The first keeps the plain
-`YYYY-MM-DD_MTG_<Commander>.md` name; another build of the same commander gets a
+**Multiple builds per commander** are fine. The first is named
+`<Commander>.md`; another build of the same commander gets a
 `" - <deck name>"` suffix instead of colliding — so name your `.txt` files meaningfully
 (`Cloud Limit Break Precon.txt` becomes that deck's name).
 </details>
@@ -260,12 +260,12 @@ the deck's cards that source actually priced.
 
 | Path | What it is |
 |------|------------|
-| `YYYY-MM-DD_MTG_<Commander>.md` | The deck note — one per deck |
-| `Attachments/YYYY-MM-DD_MTG_<Commander>.jpg` | Commander art (offline backup) |
+| `<Commander>.md` | The deck note — one per deck |
+| `Attachments/<Commander>.jpg` | Commander art (offline backup) |
 | `_Decks.md` | Auto-generated master index of every deck — never edit by hand |
 | `imports/` | Archived `.txt` decklists, so any machine can re-import |
 | `_analysis-briefs/` | `--brief` output |
-| `YYYY-MM-DD_MTG-Collection_<name>.md` | `--set` collection checklists |
+| `<name>.md` | `--set` collection checklists |
 | `.price-history.json` | Dated price snapshots behind the 📉 Price History tables |
 
 Nothing here is the card database — that lives in the repo's `.cache/`, not your vault, so it
