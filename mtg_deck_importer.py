@@ -2106,7 +2106,7 @@ def write_brief(out_dir: Path, deck_id: int, note: Path) -> Path | None:
         print(f"[{deck_id}] {deck_name_of(note)}: no deck list — skipped")
         return None
     name_m = re.search(r"^deck-name: (.+)$", text, re.M)
-    deck_name = name_m.group(1).strip() if name_m else note.stem
+    deck_name = _fm_unquote(name_m.group(1)) if name_m else note.stem
     prices = fetch_prices([n for _, n in decklist])
     shape = deck_shape(decklist, prices)
 
@@ -2329,7 +2329,7 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
 tags: [mtg, deck, commander]
 created: {today}
 commander: {commander_line}
-deck-name: {deck["name"]}
+deck-name: {_fm_scalar(deck["name"])}
 deck-url: {deck_url}
 deck-id: {deck_id}
 {price_frontmatter}
@@ -2666,7 +2666,7 @@ def update_deck_index(out_dir: Path) -> None:
             m = re.search(rf"^{key}: (.+)$", text, re.M)
             return m.group(1).strip() if m else ""
 
-        name = fm("deck-name") or ids[did].stem
+        name = _fm_unquote(fm("deck-name")) or ids[did].stem
         buy = _gbp(fm("buy-cheapest-eur") or fm("buy-eur"),
                    fm("buy-cheapest-gbp") or fm("buy-gbp"))
         val = _gbp(fm("price-eur"), fm("price-gbp"))
@@ -2727,13 +2727,37 @@ def list_decks(out_dir: Path) -> None:
         print(f"[{did:>3}] {deck_name_of(ids[did])}")
 
 
+def _fm_scalar(s: str) -> str:
+    """A string as a YAML frontmatter scalar, double-quoted only when a bare
+    value would be mis-parsed — an embedded ': ', a trailing ':', or a leading
+    YAML indicator char. Obsidian rejects the ENTIRE frontmatter block on one
+    bad value, so a deck name like 'Super Shredder: The Rise of Oroku Saki'
+    (note the ': ') must be quoted or the whole note renders as raw text.
+    """
+    s = s.rstrip()
+    if s and (": " in s or s.endswith(":") or s[0] in "\"'#&*!|>%@`[]{},?-"):
+        return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return s
+
+
+def _fm_unquote(v: str) -> str:
+    """Inverse of _fm_scalar: strip surrounding double quotes and unescape,
+    leaving a bare value untouched. Every reader of a quotable field (deck-name)
+    runs its captured value through this so a re-import still matches by name.
+    """
+    v = v.strip()
+    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+        return v[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    return v
+
+
 def _deck_name(text: str, fallback: str) -> str:
     """A deck's display name from its note text: deck-name frontmatter, else the
     H1, else the caller's fallback.
     """
     m = (re.search(r"^deck-name: (.+)$", text, re.M)
          or re.search(r"^# 🃏 (.+)$", text, re.M))
-    return m.group(1).strip() if m else fallback
+    return _fm_unquote(m.group(1)) if m else fallback
 
 
 def deck_name_of(note: Path) -> str:
@@ -2949,7 +2973,7 @@ def _recheck_from_stored(did: int, note: Path, collection_name: str | None,
 
     def field(pattern: str, fallback: str = "") -> str:
         m = re.search(pattern, text, re.M)
-        return m.group(1).strip() if m else fallback
+        return _fm_unquote(m.group(1)) if m else fallback
 
     deck = {
         "name": field(r"^deck-name: (.+)$") or field(r"^# 🃏 (.+)$", note.stem),
@@ -3057,7 +3081,7 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
             url_match = candidate
             break
         if name_match is None and name_m and \
-           name_m.group(1).strip().lower() == deck["name"].lower():
+           _fm_unquote(name_m.group(1)).lower() == deck["name"].lower():
             name_match = candidate
     match = url_match or name_match
     if match and not force:
