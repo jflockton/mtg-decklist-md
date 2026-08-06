@@ -1,6 +1,6 @@
 ---
 name: deck-guide
-description: Analyse one of James's MTG deck notes and write a tailored strategy guide into its 🧭 Deck Guide section. Invoke with a deck id (see --list) or a commander/deck name, e.g. /deck-guide 3 or /deck-guide krenko.
+description: Analyse one of James's MTG deck notes and write a tailored strategy guide into its 🧭 Deck Guide section. Invoke with a deck id (see the _Decks.md index) or a commander/deck name, e.g. /deck-guide 3 or /deck-guide krenko.
 ---
 
 # Deck Guide writer
@@ -11,14 +11,21 @@ script cannot generate.
 
 ## Finding the note
 
-1. Resolve the vault folder from `VAULT_OUTPUT_DIR` in `.env` (next to
-   `mtg_deck_importer.py`).
-2. The argument is either a deck id (run
-   `python mtg_deck_importer.py --list` to resolve it) or a fragment of the
-   commander/deck name — match it case-insensitively against the deck-note
-   filenames (now the bare deck name, e.g. `Brago, King Eternal.md`) and the
-   `deck-name:` frontmatter.
+Deck notes live in the vault at `03 - Personal/MTG/` —
+`C:\Users\James\Dropbox\obsidianVault\` on Windows, `~/Dropbox/obsidianVault/`
+on the Mac. Read the vault directly; do **not** go hunting for a repo, a `.env`
+or the importer script — this skill works from any session.
+
+1. `03 - Personal/MTG/_Decks.md` is the deck index. Its `| # |` column is the
+   deck id and each row wiki-links the note, so it resolves an id argument
+   without running anything.
+2. The argument is either a deck id (look it up in that table) or a fragment of
+   the commander/deck name — match it case-insensitively against the deck-note
+   filenames (the bare deck name, e.g. `Brago, King Eternal.md`, with a
+   ` - <deck name>` suffix on alternate builds) and the `deck-name:` frontmatter.
 3. If it matches nothing or more than one note, list the candidates and stop.
+4. `_`-prefixed notes are not decks — `_Decks.md`, `_Collection*.md`,
+   `_To-Buy.md` are index and collection notes, never targets.
 
 ## What to read before writing
 
