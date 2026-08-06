@@ -1142,15 +1142,10 @@ def fetch_archidekt(url: str) -> dict:
     commanders: list[str] = []
     mainboard: dict[str, int] = {}
     pins: dict[str, dict] = {}
+    tokens: list[dict] = []
     for c in d.get("cards") or []:
         name = c["card"]["oracleCard"]["name"]
         card_cats = c.get("categories") or []
-        # A card's FIRST category is its home — a Maybeboard card stays out
-        # of the deck even when it also carries other tags (the site's deck
-        # size counts it that way); uncategorised cards are in the deck
-        primary = cats.get(card_cats[0], {}) if card_cats else {}
-        if not primary.get("includedInDeck", True):
-            continue
         ed = c["card"].get("edition") or {}
         pin = {"set": (ed.get("editioncode") or "").lower() or None,
                "num": str(c["card"].get("collectorNumber") or "") or None,
@@ -1158,6 +1153,20 @@ def fetch_archidekt(url: str) -> dict:
                # doesn't price etched separately, and close beats absent
                "foil": c.get("modifier") in ("Foil", "Etched"),
                "cat": card_cats[0] if card_cats else None}
+        # Token cards (the site's "Tokens & Extras") aren't part of the 100 —
+        # Archidekt flags their category includedInDeck: False — but they ARE
+        # real purchasable cards, so they get their own off-totals section
+        if c["card"]["oracleCard"].get("layout") in (
+                "token", "double_faced_token", "emblem"):
+            tokens.append({"qty": c.get("quantity", 1), "name": name,
+                           "set": pin["set"], "num": pin["num"]})
+            continue
+        # A card's FIRST category is its home — a Maybeboard card stays out
+        # of the deck even when it also carries other tags (the site's deck
+        # size counts it that way); uncategorised cards are in the deck
+        primary = cats.get(card_cats[0], {}) if card_cats else {}
+        if not primary.get("includedInDeck", True):
+            continue
         if primary.get("isPremier"):
             commanders.append(name)
         else:
@@ -1174,6 +1183,7 @@ def fetch_archidekt(url: str) -> dict:
         "commanders": sorted(commanders),
         "mainboard": [(q, n) for n, q in mainboard.items()],
         "pins": pins,
+        "tokens": sorted(tokens, key=lambda t: t["name"].lower()),
     }
 
 
@@ -2492,6 +2502,115 @@ def render_deck_listing(decklist: list[tuple[int, str]],
     return "\n".join(lines)
 
 
+def _token_rows(tokens: list[dict]) -> list[dict]:
+    """Price and picture each token at its pinned printing — reference DB
+    first, Scryfall API for anything the bulk snapshot doesn't know. Tokens
+    rarely carry a market price (Cardmarket seldom lists recent ones
+    individually), so rows keep None prices rather than being dropped: the
+    section's job is the pinned what-to-grab checklist, prices are a bonus.
+    """
+    rows = []
+    db = scryfall_db()
+    misses = []
+    for t in tokens:
+        row = None
+        if db is not None and t.get("set") and t.get("num"):
+            row = db.execute(
+                "SELECT eur, usd, image_uri FROM cards "
+                "WHERE set_code = ? AND collector_number = ?",
+                (t["set"].lower(), str(t["num"]))).fetchone()
+        if row is None:
+            misses.append(t)
+            rows.append({**t, "eur": None, "usd": None, "img": None})
+        else:
+            rows.append({**t, "eur": row["eur"], "usd": row["usd"],
+                         "img": row["image_uri"]})
+    if misses:
+        idents = [{"set": t["set"], "collector_number": str(t["num"])}
+                  for t in misses if t.get("set") and t.get("num")]
+        if idents:
+            r = http("POST", SCRYFALL_COLLECTION, json={"identifiers": idents})
+            if r.status_code == 200:
+                by_key = {(c["set"].lower(), str(c["collector_number"])): c
+                          for c in r.json().get("data", [])}
+                for row in rows:
+                    card = by_key.get(((row.get("set") or "").lower(),
+                                      str(row.get("num") or "")))
+                    if card is not None and row["img"] is None:
+                        p = card.get("prices", {})
+                        row.update(
+                            eur=float(p["eur"]) if p.get("eur") else None,
+                            usd=float(p["usd"]) if p.get("usd") else None,
+                            img=scryfall_card_image(card))
+    return rows
+
+
+def render_tokens_section(tokens: list[dict], rates: dict | None) -> str:
+    """🎟️ Tokens & Extras — the physical token cards the deck's spells
+    create. Real purchasable cards, but not part of the 100, so everything
+    here stays OFF the deck value, buy totals and deck shape. Only written
+    when an import carried a token list (Archidekt URLs do).
+    """
+    if not tokens:
+        return ""
+    rows = _token_rows(tokens)
+    table = "\n".join(
+        f"| {r['name']} | {_pin_cell(r)} | {_eur_cell(r['eur'])} | "
+        f"{_gbp_cell(_card_gbp(r['eur'], r['usd'], rates))} |"
+        for r in rows)
+    gallery = _callout("🖼️ Token Gallery",
+                       render_gallery([(r["img"], r["name"]) for r in rows]))
+    listing = "\n".join(
+        _choice_line(r["qty"], {"printed": r["name"], "set_code": r.get("set"),
+                                "num": r.get("num")}, r["name"])
+        for r in rows)
+    priced = sum(1 for r in rows if r["eur"] is not None or r["usd"] is not None)
+    body = f"""The physical token cards this deck's spells create — real cards worth grabbing with the order, but **not part of the 100**: nothing here counts toward the deck value, buy lists or deck shape. Printings are the ones chosen on the deck site. Tokens are rarely listed individually ({priced}/{len(rows)} priced here) — any token of the same name and stats does the job.
+
+| Token | Version | EUR | ≈ GBP |
+|-------|---------|----:|------:|
+{table}
+
+{gallery}
+
+> [!note]- 📋 Token List (copy-paste)
+>
+> ```
+{_quoted_block(listing)}
+> ```"""
+    return f"\n\n## 🎟️ Tokens & Extras\n\n{body}"
+
+
+def _pin_cell(r: dict) -> str:
+    return (f"({r['set'].upper()}) {r['num']}"
+            if r.get("set") and r.get("num") else "—")
+
+
+def _eur_cell(eur: float | None) -> str:
+    return f"€{eur:,.2f}" if eur is not None else "—"
+
+
+def _quoted_block(text: str) -> str:
+    return "\n".join(f"> {ln}" for ln in text.splitlines())
+
+
+def _note_tokens(text: str) -> list[dict]:
+    """The token list stored in a note's 🎟️ section, so a stored-list
+    rebuild keeps it without refetching the site.
+    """
+    block = re.search(
+        r"## 🎟️ Tokens & Extras.*?📋 Token List \(copy-paste\)\s*\n>\s*\n> ```\n(.*?)> ```",
+        text, re.S)
+    if not block:
+        return []
+    tokens = []
+    for line in block.group(1).splitlines():
+        p = parse_card_line_full(line.lstrip("> ").strip())
+        if p:
+            tokens.append({"qty": p[0], "name": p[1], "set": p[2], "num": p[3]})
+    return tokens
+
+
 def build_note(deck: dict, decklist: list[tuple[int, str]],
                image_url: str, deck_url: str, report: dict,
                buy: dict | None, collection_name: str | None,
@@ -2506,6 +2625,7 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
     commander_line = ", ".join(deck["commanders"])
     listing = render_deck_listing(decklist, deck.get("pins"))
     rates = report["rates"]
+    tokens_section = render_tokens_section(deck.get("tokens") or [], rates)
 
     cheap = cheapest_buy(buy, choices, rates) if buy else None
     price_frontmatter = price_frontmatter_str(report)
@@ -2559,7 +2679,7 @@ price-date: {today}
 
 ```
 {listing}
-```{buy_section}
+```{tokens_section}{buy_section}
 
 {render_budget_list(decklist, report, choices, cheap)}{cheap_buy_section}
 """
@@ -3186,6 +3306,7 @@ def _recheck_from_stored(did: int, note: Path, collection_name: str | None,
         # The frontmatter line already holds all commanders joined with ", "
         "commanders": [field(r"^commander: (.+)$", decklist[0][1])],
         "pins": _note_pins(text),
+        "tokens": _note_tokens(text),
     }
     deck_url = field(r"^deck-url: (.+)$")
     image_url = field(r"!\[[^\]]*\|290\]\(([^)]*)\)")

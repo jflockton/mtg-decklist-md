@@ -106,6 +106,8 @@ lists. The 💸 Cheapest Build ignores all of it by design — it still hunts ev
 so the savings show what your chosen (possibly foil) version really costs over the
 cheapest one. An Archidekt **URL** import gets all of this from the site automatically,
 including which card is the commander; bare `1 Card Name` lines behave exactly as before.
+Archidekt's **Tokens & Extras** come along too, as a 🎟️ section of the note — the physical
+token cards the deck creates, pinned to the chosen printings, kept off every deck total.
 
 <details>
 <summary>Re-imports, and several decks sharing one commander</summary>
