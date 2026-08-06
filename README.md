@@ -90,11 +90,22 @@ quick version.
 |--------|------------------|
 | 🟣 [Moxfield](https://moxfield.com) — `…/decks/<id>` | Headed Chrome ([why?](#-faq)) |
 | 🟠 [EDHREC](https://edhrec.com) — `…/deckpreview/<hash>` | Plain HTTP — no browser |
+| 🟢 [Archidekt](https://archidekt.com) — `…/decks/<id>` | Plain HTTP — no browser |
 | 📄 Local `.txt` decklist | Read directly — no network for the list itself |
 
 A `.txt` file is one `1 Card Name` per line (the usual export format), **first card is the
 commander**, and the filename becomes the deck name. After a successful import it's moved
 into `imports/` inside your vault, so any machine with the vault can re-import it.
+
+**Chosen printings are honoured.** A line may pin its exact version, Archidekt-style —
+`1x Blade of Selves (c15) 51 *F* [Tokens]` — and the note then prices, pictures and
+buy-lists *that* printing (at its foil price when marked `*F*`) instead of Scryfall's
+default, which is just the newest reprint. The `[Category]` tag is your own role note:
+it's kept in the 📜 Deck List for reference, and never leaks into the copy-paste buy
+lists. The 💸 Cheapest Build ignores all of it by design — it still hunts every printing,
+so the savings show what your chosen (possibly foil) version really costs over the
+cheapest one. An Archidekt **URL** import gets all of this from the site automatically,
+including which card is the commander; bare `1 Card Name` lines behave exactly as before.
 
 <details>
 <summary>Re-imports, and several decks sharing one commander</summary>

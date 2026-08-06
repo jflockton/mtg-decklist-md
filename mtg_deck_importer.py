@@ -75,6 +75,7 @@ MANAPOOL_PRICES = "https://manapool.com/api/v1/prices/singles"
 # to python by mistake (it sorts before mtg_deck_importer.py otherwise)
 MANAPOOL_CACHE = SCRIPT_DIR / ".cache" / "manapool_prices.json"
 MOXFIELD_API = "https://api2.moxfield.com/v3/decks/all/{deck_id}"
+ARCHIDEKT_API = "https://archidekt.com/api/decks/{deck_id}/"
 
 # Windows-illegal filename characters (commas are fine and kept)
 ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
@@ -89,22 +90,33 @@ NAME_DECORATIONS = re.compile(r"\s*(\*[A-Za-z]\*|\([A-Z0-9]{2,6}\)\s*[\w-]*)\s*$
 # and most exports emit. Both are accepted, anywhere on the line.
 FOIL_MARKER = re.compile(r"\s*(?:\*[A-Za-z]\*|✨)\s*")
 SET_SUFFIX = re.compile(r"\s*\(([A-Za-z0-9]{2,6})\)\s*([\w-]*)\s*$")
+# Archidekt exports end lines with a hand-authored role tag — `… [Removal]`.
+# Card names never contain square brackets, so a trailing [] is always a tag.
+CATEGORY_SUFFIX = re.compile(r"\s*\[([^\[\]]+)\]\s*$")
 
 
 def parse_card_line_full(
-        line: str) -> tuple[int, str, str | None, str | None, bool] | None:
-    """(quantity, name, set code, collector number, is foil) from a card line.
+        line: str,
+) -> tuple[int, str, str | None, str | None, bool, str | None] | None:
+    """(quantity, name, set code, collector number, is foil, category) from a
+    card line.
 
-    The set/number suffix — `1 Island (FIN) 298` — pins the exact printing, and
-    ✨ (or *F*) marks it as the foil of that printing. Deck matching ignores
-    both, since any Island plays the same; collection value and set checklists
-    need them, because a foil is worth several times its non-foil twin.
+    The set/number suffix — `1 Island (FIN) 298` — pins the exact printing,
+    ✨ (or *F*) marks it as the foil of that printing, and a trailing
+    `[Removal]` is an Archidekt category tag. Deck matching ignores all three,
+    since any Island plays the same; deck notes keep the pin and foil so the
+    note prices the version you actually chose, and the category as reference.
     """
     line = line.strip()
     if not line:
         return None
     m = re.match(r"(\d+)[xX]?\s+(.+)", line)
     qty, rest = (int(m.group(1)), m.group(2)) if m else (1, line)
+    category = None
+    c = CATEGORY_SUFFIX.search(rest)  # strip first: it trails the set/number
+    if c:
+        category = c.group(1).strip()
+        rest = rest[:c.start()].strip()
     foil = bool(FOIL_MARKER.search(rest))
     rest = FOIL_MARKER.sub(" ", rest).strip()
     set_code = number = None
@@ -113,7 +125,7 @@ def parse_card_line_full(
         set_code = s.group(1).lower()
         number = (s.group(2) or "").strip() or None
         rest = rest[:s.start()].strip()
-    return (qty, rest, set_code, number, foil) if rest else None
+    return (qty, rest, set_code, number, foil, category) if rest else None
 
 
 def read_collection_entries(path: Path) -> list[dict]:
@@ -624,7 +636,7 @@ def buy_report(decklist: list[tuple[int, str]], owned: dict[str, int],
         missing.append({"need": need, "have": have, "name": name,
                         "eur": p.get("eur"), "usd": p.get("usd"),
                         "set": p.get("set"), "num": p.get("num"),
-                        "info": info})
+                        "foil": bool(p.get("foil")), "info": info})
     missing.sort(key=lambda c: c["eur"] or 0, reverse=True)
     return {"missing": missing, "owned_rows": owned_rows, "totals": totals,
             "unpriced": unpriced,
@@ -1109,16 +1121,85 @@ def fetch_edhrec(url: str) -> dict:
     }
 
 
+def fetch_archidekt(url: str) -> dict:
+    """Archidekt's deck JSON is public and un-walled — plain HTTP, no browser.
+
+    It carries everything the text export does and more: each card's exact
+    printing (edition + collector number), foil modifier and hand-authored
+    category, plus which category IS the command zone (isPremier) — so the
+    commander needs no first-line convention and the note prices the exact
+    versions chosen on the site. Maybeboard/sideboard categories are excluded
+    via their includedInDeck flag.
+    """
+    m = re.search(r"archidekt\.com/decks/(\d+)", url)
+    if not m:
+        sys.exit(f"Could not read an Archidekt deck id from: {url}")
+    r = http("GET", ARCHIDEKT_API.format(deck_id=m.group(1)))
+    r.raise_for_status()
+    d = r.json()
+    cats = {c["name"]: c for c in d.get("categories") or []}
+
+    commanders: list[str] = []
+    mainboard: dict[str, int] = {}
+    pins: dict[str, dict] = {}
+    for c in d.get("cards") or []:
+        name = c["card"]["oracleCard"]["name"]
+        card_cats = c.get("categories") or []
+        # A card's FIRST category is its home — a Maybeboard card stays out
+        # of the deck even when it also carries other tags (the site's deck
+        # size counts it that way); uncategorised cards are in the deck
+        primary = cats.get(card_cats[0], {}) if card_cats else {}
+        if not primary.get("includedInDeck", True):
+            continue
+        ed = c["card"].get("edition") or {}
+        pin = {"set": (ed.get("editioncode") or "").lower() or None,
+               "num": str(c["card"].get("collectorNumber") or "") or None,
+               # Etched foils get the plain foil price — Scryfall's EUR data
+               # doesn't price etched separately, and close beats absent
+               "foil": c.get("modifier") in ("Foil", "Etched"),
+               "cat": card_cats[0] if card_cats else None}
+        if primary.get("isPremier"):
+            commanders.append(name)
+        else:
+            mainboard[name] = mainboard.get(name, 0) + c.get("quantity", 1)
+        if (pin["set"] and pin["num"]) or pin["foil"] or pin["cat"]:
+            pins.setdefault(name.lower(), pin)
+    if not commanders:
+        sys.exit("No commander found on this Archidekt deck — is a category "
+                 "marked as the command zone on the site?")
+    return {
+        "name": d.get("name") or f"Archidekt deck {m.group(1)}",
+        "format": "Commander",
+        "source_md": f"[Archidekt]({url})",
+        "commanders": sorted(commanders),
+        "mainboard": [(q, n) for n, q in mainboard.items()],
+        "pins": pins,
+    }
+
+
 def fetch_textfile(path_str: str) -> dict:
     """A local decklist in the standard export format: one 'N Card Name' per
     line, first card is the commander. Deck name = file name without .txt.
+
+    Lines may carry Archidekt-style decorations — `1x Name (set) 405 *F*
+    [Removal]` — which are kept as "pins": the note then prices and pictures
+    the exact printing the file names (at its foil price when marked *F*)
+    instead of Scryfall's default, and the category tag rides along as
+    reference. Bare `1 Name` lines behave exactly as before.
     """
     path = Path(path_str)
     cards: list[tuple[int, str]] = []
+    pins: dict[str, dict] = {}
     for line in path.read_text(encoding="utf-8-sig").splitlines():
-        parsed = parse_card_line(line)
-        if parsed:
-            cards.append(parsed)
+        parsed = parse_card_line_full(line)
+        if not parsed:
+            continue
+        qty, name, set_code, num, foil, cat = parsed
+        cards.append((qty, name))
+        if (set_code and num) or foil or cat:
+            # First line wins when an export splits a card across printings
+            pins.setdefault(name.lower(), {"set": set_code, "num": num,
+                                           "foil": foil, "cat": cat})
     if not cards:
         sys.exit(f"No cards found in {path}")
     commander = cards[0][1]
@@ -1133,6 +1214,7 @@ def fetch_textfile(path_str: str) -> dict:
         "source_md": f"📄 `{path.name}`",
         "commanders": [commander],
         "mainboard": [(q, n) for n, q in merged.items()],
+        "pins": pins,
         "txt_path": str(path),
     }
 
@@ -1140,6 +1222,7 @@ def fetch_textfile(path_str: str) -> dict:
 FETCHERS = [
     (re.compile(r"moxfield\.com/decks/"), fetch_moxfield),
     (re.compile(r"edhrec\.com/deckpreview"), fetch_edhrec),
+    (re.compile(r"archidekt\.com/decks/"), fetch_archidekt),
 ]
 
 
@@ -1240,6 +1323,91 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
     return prices
 
 
+def _pin_entry(entry: dict, pin: dict, row: dict) -> None:
+    """Overwrite one deck price entry with its pinned printing's numbers.
+    Foil pins take the foil price where one is listed — a foil often costs
+    several times its twin, and the Cheapest Build's savings should show what
+    the shiny copy really costs. A foil with no listed foil price falls back
+    to the non-foil price rather than reading as unpriced.
+    """
+    foil = bool(pin.get("foil"))
+    eur = (row.get("eur_foil") if foil and row.get("eur_foil") is not None
+           else row.get("eur"))
+    usd = (row.get("usd_foil") if foil and row.get("usd_foil") is not None
+           else row.get("usd"))
+    if eur is None and usd is None and \
+            (entry.get("eur") is not None or entry.get("usd") is not None):
+        # The pinned printing has no market price at all — usually a
+        # digital-only version or a site-internal promo id (Archidekt's
+        # `(prm) 82852`-style). A silently unpriced row helps nobody, so keep
+        # the default printing's price and say so.
+        print(f"Pin:       {entry.get('name', '?')} ({pin['set'].upper()}) "
+              f"{pin['num']} has no market price — keeping the default printing")
+        return
+    entry.update({"eur": eur, "usd": usd, "set": pin["set"],
+                  "num": str(pin["num"]), "foil": foil,
+                  "img": row.get("image_uri") or entry.get("img")})
+
+
+def apply_pins(prices: dict[str, dict], pins: dict[str, dict] | None) -> None:
+    """Re-point deck prices at the exact printings an import named.
+
+    Where an import pinned a card — `1x Blade of Selves (c15) 51` — the
+    deck's own-version price, gallery image and Buy List pin describe THAT
+    printing, not Scryfall's default (which is just the newest reprint and
+    silently changes art every time a card is reprinted). Cards without a pin
+    keep the default behaviour, and the Cheapest Build is untouched either
+    way — it still hunts every printing.
+    """
+    if not pins:
+        return
+    want = {n: p for n, p in pins.items()
+            if p.get("set") and p.get("num") and n in prices}
+    # A foil marker without a printing pin can't be priced as a specific foil,
+    # but the buy list should still say the deck wants the shiny one
+    for n, p in pins.items():
+        if p.get("foil") and n in prices and n not in want:
+            prices[n]["foil"] = True
+    db = scryfall_db()
+    misses: list[tuple[str, dict]] = []
+    for name, pin in want.items():
+        row = db.execute(
+            "SELECT name, eur, usd, eur_foil, usd_foil, image_uri "
+            "FROM cards WHERE set_code = ? AND collector_number = ?",
+            (pin["set"].lower(), str(pin["num"]))).fetchone() \
+            if db is not None else None
+        if row is None:
+            misses.append((name, pin))
+        else:
+            _pin_entry(prices[name], pin, dict(row))
+    # API fallback: --no-bulk runs, or a printing newer than the bulk snapshot
+    for i in range(0, len(misses), 75):
+        chunk = misses[i:i + 75]
+        r = http("POST", SCRYFALL_COLLECTION,
+                 json={"identifiers": [
+                     {"set": p["set"], "collector_number": str(p["num"])}
+                     for _, p in chunk]})
+        if r.status_code != 200:
+            continue  # those pins keep their by-name default prices
+        by_key = {(c["set"].lower(), str(c["collector_number"])): c
+                  for c in r.json().get("data", [])}
+        for name, pin in chunk:
+            card = by_key.get((pin["set"].lower(), str(pin["num"])))
+            if card is None:
+                print(f"Pin:       {prices[name]['name']} "
+                      f"({pin['set'].upper()}) {pin['num']} not found — "
+                      "using the default printing")
+                continue
+            p = card.get("prices", {})
+            _pin_entry(prices[name], pin, {
+                "eur": float(p["eur"]) if p.get("eur") else None,
+                "usd": float(p["usd"]) if p.get("usd") else None,
+                "eur_foil": float(p["eur_foil"]) if p.get("eur_foil") else None,
+                "usd_foil": float(p["usd_foil"]) if p.get("usd_foil") else None,
+                "image_uri": scryfall_card_image(card),
+            })
+
+
 def fetch_printing_prices(entries: list[dict]) -> dict[tuple[str, str], dict]:
     """Prices for exact printings, keyed (set code, collector number).
 
@@ -1286,16 +1454,27 @@ def fetch_printing_prices(entries: list[dict]) -> dict[tuple[str, str], dict]:
     return out
 
 
-def fetch_card_images(names: list[str]) -> dict[str, str | None]:
+def fetch_card_images(names: list[str],
+                      pins: dict[str, dict] | None = None
+                      ) -> dict[str, str | None]:
     """Card image URLs only, via Scryfall's collection endpoint. Used by
     --reimport to (re)build galleries without pulling fresh market prices —
-    the response carries prices too, but they are ignored here.
+    the response carries prices too, but they are ignored here. Pinned cards
+    are requested by set/collector number so the gallery shows the printing
+    the import named, not Scryfall's default.
     """
+    idents = []
+    for n in names:
+        pin = (pins or {}).get(n.lower()) or {}
+        if pin.get("set") and pin.get("num"):
+            idents.append({"set": pin["set"],
+                           "collector_number": str(pin["num"])})
+        else:
+            idents.append({"name": n})
     imgs: dict[str, str | None] = {}
-    for i in range(0, len(names), 75):  # collection endpoint caps at 75 cards
-        chunk = names[i:i + 75]
-        r = http("POST", SCRYFALL_COLLECTION,
-                 json={"identifiers": [{"name": n} for n in chunk]})
+    for i in range(0, len(idents), 75):  # collection endpoint caps at 75 cards
+        chunk = idents[i:i + 75]
+        r = http("POST", SCRYFALL_COLLECTION, json={"identifiers": chunk})
         r.raise_for_status()
         for card in r.json().get("data", []):
             img = scryfall_card_image(card)
@@ -2202,9 +2381,12 @@ def render_buy_section(buy: dict, collection_name: str, rates: dict | None,
     table = "\n".join(rows)
     # Pin the printing these prices are for. Without it "1 Smoke" sends you to
     # a search where the cheapest hit is nothing like the €3.05 quoted here.
+    # *F* marks lines priced as foils, so the shop basket matches the quote;
+    # category tags never appear here — this is a shopping list, not notes.
     listing = "\n".join(
         _choice_line(m["need"], {"printed": m["name"], "set_code": m.get("set"),
                                  "num": m.get("num")}, m["name"])
+        + (" *F*" if m.get("foil") else "")
         for m in sorted(buy["missing"], key=lambda m: m["name"].lower()))
     return f"""## 🛒 Cards to Complete the Deck
 
@@ -2288,6 +2470,28 @@ def extract_reviews(text: str) -> dict[str, str]:
     return reviews
 
 
+def render_deck_listing(decklist: list[tuple[int, str]],
+                        pins: dict[str, dict] | None = None) -> str:
+    """The 📜 Deck List block's lines, at full fidelity. A pinned card keeps
+    its `(SET) 123` (still valid Arena/Moxfield syntax), its *F* foil marker
+    and its `[Category]` tag — so nothing an import stated is lost, and a
+    stored-list rebuild (--recheck with the source unreachable) re-reads all
+    of it via _note_pins. Bare cards render bare, exactly as before.
+    """
+    lines = []
+    for qty, name in decklist:
+        pin = (pins or {}).get(name.lower()) or {}
+        parts = [f"{qty} {name}"]
+        if pin.get("set") and pin.get("num"):
+            parts.append(f"({pin['set'].upper()}) {pin['num']}")
+        if pin.get("foil"):
+            parts.append("*F*")
+        if pin.get("cat"):
+            parts.append(f"[{pin['cat']}]")
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
+
+
 def build_note(deck: dict, decklist: list[tuple[int, str]],
                image_url: str, deck_url: str, report: dict,
                buy: dict | None, collection_name: str | None,
@@ -2300,7 +2504,7 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
     """
     today = date.today().isoformat()
     commander_line = ", ".join(deck["commanders"])
-    listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
+    listing = render_deck_listing(decklist, deck.get("pins"))
     rates = report["rates"]
 
     cheap = cheapest_buy(buy, choices, rates) if buy else None
@@ -2981,12 +3185,14 @@ def _recheck_from_stored(did: int, note: Path, collection_name: str | None,
         "source_md": field(r"^\*\*Source:\*\* (.+)$"),
         # The frontmatter line already holds all commanders joined with ", "
         "commanders": [field(r"^commander: (.+)$", decklist[0][1])],
+        "pins": _note_pins(text),
     }
     deck_url = field(r"^deck-url: (.+)$")
     image_url = field(r"!\[[^\]]*\|290\]\(([^)]*)\)")
     created = field(r"^created: (.+)$")
 
     prices = fetch_prices([n for _, n in decklist])
+    apply_pins(prices, deck["pins"])
     report = price_report(decklist, prices)
     # No usable collection → no ownership comparison; the note is rebuilt
     # without its 🛒 Cards to Complete sections (see report_collection_state)
@@ -3127,6 +3333,7 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
             print(f"Collection: already lists '{deck['name']}' — nothing added")
 
     prices = fetch_prices([name for _, name in decklist])
+    apply_pins(prices, deck.get("pins"))
     report = price_report(decklist, prices)
 
     collection_name, buy = None, None
@@ -3222,6 +3429,24 @@ def _note_decklist(text: str) -> list[tuple[int, str]] | None:
     return decklist or None
 
 
+def _note_pins(text: str) -> dict[str, dict]:
+    """Pins stored in a note's 📜 Deck List block — `(SET) 123`, `*F*`,
+    `[Category]`. The block keeps an import's full-fidelity lines, so a
+    stored-list rebuild re-prices the exact versions the import named rather
+    than quietly reverting to Scryfall's defaults.
+    """
+    block = re.search(r"## 📜 Deck List\s*```\n(.*?)```", text, re.S)
+    pins: dict[str, dict] = {}
+    if not block:
+        return pins
+    for line in block.group(1).splitlines():
+        p = parse_card_line_full(line)
+        if p and ((p[2] and p[3]) or p[4] or p[5]):
+            pins.setdefault(p[1].lower(), {"set": p[2], "num": p[3],
+                                           "foil": p[4], "cat": p[5]})
+    return pins
+
+
 def reimport(out_dir: Path, deck_id: int | None) -> None:
     """Refresh deck lists and card art without touching prices. For each note
     (or one, by id): re-fetch the list from its source (falling back to the
@@ -3257,12 +3482,14 @@ def reimport(out_dir: Path, deck_id: int | None) -> None:
             mainboard = sorted(deck["mainboard"], key=lambda c: c[1].lower())
             decklist = [(1, n) for n in deck["commanders"]] + mainboard
             primary = deck["commanders"][0]
+            pins = deck.get("pins")
         else:
             decklist = _note_decklist(text)
             if not decklist:
                 print(f"[{did}] {deck_name_of(note)}: no stored list to fall back on — skipped")
                 continue
             primary = decklist[0][1]  # listing puts the commander first
+            pins = _note_pins(text)
 
         # Prices/buy sections are left untouched, so warn if the live list
         # drifted from what those sections were priced against.
@@ -3277,14 +3504,16 @@ def reimport(out_dir: Path, deck_id: int | None) -> None:
                       lambda mm: f"{mm.group(1)}{image_url}{mm.group(2)}",
                       text, count=1)
 
-        # Deck List block — replace with the (possibly updated) list
-        listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
+        # Deck List block — replace with the (possibly updated) list, keeping
+        # any pins/foil/category decorations the import carried
+        listing = render_deck_listing(decklist, pins)
         text = re.sub(r"(## 📜 Deck List\s*```\n).*?(```)",
                       lambda m: f"{m.group(1)}{listing}\n{m.group(2)}",
                       text, count=1, flags=re.S)
 
-        # Card gallery — fresh images only, no price lookups
-        imgs = fetch_card_images([n for _, n in decklist])
+        # Card gallery — fresh images only, no price lookups; pinned cards
+        # show the printing the import named
+        imgs = fetch_card_images([n for _, n in decklist], pins)
         cells = [(imgs.get(name.lower()), f"{name}{f' ×{qty}' if qty > 1 else ''}")
                  for qty, name in decklist]
         gallery = render_card_gallery(cells)
