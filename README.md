@@ -26,6 +26,23 @@ Run it again next month and it re-prices the lot, charts the trend, and shouts w
 you need has been reprinted and crashed in price. Everything is plain markdown and hosted
 image links in your own vault — no account, no lock-in.
 
+## 📑 Index
+
+| Section | Description |
+|---|---|
+| [🚀 Quick start](#-quick-start) | Requirements, install, `.env` settings, and the first run |
+| [🔁 The loop](#-the-loop) | How you actually live with it month to month |
+| [🌐 Deck sources](#-deck-sources) | Moxfield, EDHREC, Archidekt and `.txt` — and how chosen printings are honoured |
+| [🗃️ Your collection](#️-your-collection) | The one-card-per-line format, `--collection` vs `--merge-collection` |
+| [🎯 Collecting a whole set](#-collecting-a-whole-set) | `--set` checklists, tick preservation, and cheapest-printing pricing |
+| [💰 Prices](#-prices) | Cardmarket as house currency, ≈ GBP conversion, and the Cheapest Build |
+| [📦 What lands in your vault](#-what-lands-in-your-vault) | Every file the importer writes, and what's inside a deck note |
+| [The reference DB](#the-reference-db) | The local Scryfall SQLite cache and its refresh flags |
+| [🧾 Command reference](#-command-reference) | Every flag, grouped by import, refresh, manage, collection, sets and analysis |
+| [🤖 Claude Code skills](#-claude-code-skills) | `/analyse-deck` and `/deck-guide`, and what each writes into |
+| [❓ FAQ](#-faq) | Why Chrome opens, and what stays off GitHub |
+| [🙏 Credits](#-credits) | Data sources and image rights |
+
 ## 🚀 Quick start
 
 Needs **Python 3.10+** and **Google Chrome** (only for Moxfield — EDHREC and `.txt` files
