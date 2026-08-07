@@ -324,6 +324,10 @@ refresh, since none of them price anything.
 <details>
 <summary>Everything inside a deck note, in the order it appears</summary>
 
+0. 🔗 **Header block** — commander, format, source, and a **Project** wiki-link back to the
+   vault's MTG Deck Importer dashboard (also in the frontmatter as `project:`), so generated
+   notes never float unlinked in the Obsidian graph. `_Decks.md` and the collection notes
+   carry the same link.
 1. 💰 **Deck Value** — totals per market with a ≈ GBP column (also in the frontmatter for
    Dataview) and the 🛒 cost-to-finish line.
 2. 📉 **Price History** — a collapsed table of the last 8 price checks (deck value, cost to
