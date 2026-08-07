@@ -105,3 +105,14 @@ magazine article.
 
 Tell James the guide is in, with a 2–3 sentence summary of the deck's plan
 and the one warning he most needs to know. Do not run the importer.
+
+## Vault linking convention
+
+Any **new** markdown file this skill (or any MTG Deck Importer tooling) writes into
+the vault MUST carry the project link, or it floats as an island in the Obsidian graph:
+
+- frontmatter: `project: "[[02 - Projects/MTG Deck Importer/_Current State|MTG Deck Importer]]"`
+- a visible `**Project:** [[02 - Projects/MTG Deck Importer/_Current State|MTG Deck Importer]]` line near the top
+- a file that serves one deck/collection also wiki-links that note (e.g. a `**For:**` line)
+
+Editing an existing note: leave its links alone.

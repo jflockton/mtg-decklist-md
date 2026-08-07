@@ -50,3 +50,14 @@ the brief — spend tokens on thinking, not on reading.
 
 Reply with one line per deck (id, deck, the primary win condition you
 identified) — not the full prose, the user reads that in Obsidian.
+
+## Vault linking convention
+
+Any **new** markdown file this skill (or any MTG Deck Importer tooling) writes into
+the vault MUST carry the project link, or it floats as an island in the Obsidian graph:
+
+- frontmatter: `project: "[[02 - Projects/MTG Deck Importer/_Current State|MTG Deck Importer]]"`
+- a visible `**Project:** [[02 - Projects/MTG Deck Importer/_Current State|MTG Deck Importer]]` line near the top
+- a file that serves one deck/collection also wiki-links that note (e.g. a `**For:**` line)
+
+Editing an existing note: leave its links alone.
