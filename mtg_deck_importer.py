@@ -1325,7 +1325,14 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
         info = card_prints_info(name, (entry or {}).get("name"))
         cheap = info.get("cheapest")
         if cheap:
+            # Merge over the original entry, never replace it: the cheapest-print
+            # lookup only knows prices, so a rebuilt-from-scratch dict would lose
+            # type/cmc/oracle and quietly drop the card out of 📊 Deck Shape's
+            # type counts, mana curve and role tags. Basics are the common case
+            # (their collection printing is usually unpriced), which is how a
+            # 38-land deck came to report "10 lands".
             prices[name.lower()] = {
+                **(entry or {}),
                 "name": info["canonical"],
                 "eur": cheap.get("eur"),
                 "usd": cheap.get("usd"),
@@ -1842,9 +1849,14 @@ def deck_shape(decklist: list[tuple[int, str]],
     curve: dict[int, int] = {}
     roles: dict[str, list[str]] = {label: [] for label, _ in ROLE_PATTERNS}
     gc, extra_turns, land_denial = [], [], []
+    untyped: list[str] = []
     for qty, name in decklist:
         p = prices.get(name.lower()) or {}
         tline = (p.get("type") or "").split("//")[0]
+        if not tline:
+            # No type line means this card is invisible to every count below.
+            # Say so rather than shipping a quietly wrong "Types:" line.
+            untyped.append(f"{qty}x {name}")
         for major in ("Creature", "Planeswalker", "Battle", "Instant",
                       "Sorcery", "Artifact", "Enchantment", "Land"):
             if major in tline:
@@ -1867,6 +1879,9 @@ def deck_shape(decklist: list[tuple[int, str]],
             if re.search(pat, text):
                 roles[label].append(name)
                 break
+    if untyped:
+        print(f"Shape:     ⚠️  {len(untyped)} card(s) had no type line and are "
+              f"missing from the Deck Shape counts: {', '.join(untyped)}")
     return {"types": types, "curve": curve, "roles": roles, "gc": gc,
             "extra_turns": extra_turns, "land_denial": land_denial}
 
