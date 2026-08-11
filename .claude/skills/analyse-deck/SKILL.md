@@ -26,6 +26,10 @@ the brief — spend tokens on thinking, not on reading.
 
    Replace the `-` placeholder with your prose. Never touch anything outside
    the three headings; never run --recheck as part of this.
+4. Tick each section's row in the note's `## 🗂️ Contents` table: hand-written
+   sections carry a `— ✍️ *empty*` marker, so drop that marker from the three
+   rows you filled (leave the rest of each cell as-is). If the note has no
+   Contents table yet, leave it — the next `--recheck` builds one.
 
 ## What to write
 

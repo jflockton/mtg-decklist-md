@@ -336,21 +336,28 @@ refresh, since none of them price anything.
    for a wishlist deck.
 3. 🖼️ **Commander image** — a link to Scryfall's hosted image, so it survives being read
    outside Obsidian; a local copy goes to `Attachments/` as an offline backup.
-4. ✍️ **Your review sections** — 🧠 First Impressions · 💪 Strengths · ⚠️ Weaknesses ·
+4. 🗂️ **Contents** — a table of every section in *this* note, each row a `[[#heading]]` jump
+   link with a one-line description. Built by reading the finished note's own `##` headings,
+   so it can only ever list sections the note actually has (no 🎟️ Tokens row on a deck with
+   no tokens, no 🛒 rows when there's no collection to compare against). Hand-written sections
+   still holding their `-` placeholder are marked **✍️ *empty***, so the table doubles as a
+   checklist of what you've yet to write. Rebuilt on every write — import, `--force`,
+   `--recheck` **and** `--reimport` (the one path that splices rather than regenerating).
+5. ✍️ **Your review sections** — 🧠 First Impressions · 💪 Strengths · ⚠️ Weaknesses ·
    🔄 Cards to Consider Swapping · 📝 Play Notes · 🧭 Deck Guide. Empty headings,
    **preserved through every rebuild**.
-5. 📊 **Deck Shape** — locally computed, no AI: type counts, mana curve, keyword role
+6. 📊 **Deck Shape** — locally computed, no AI: type counts, mana curve, keyword role
    buckets, and a bracket checklist (Game Changers, extra turns, mass land denial). Followed
    by three more preserved headings — 🎮 Play Pattern · 🏆 Win Conditions ·
    ⚠️ Interactions & Warnings — for you or `/analyse-deck` to fill.
-6. 💰 **Card Prices** and 🖼️ **Card Gallery** — every card dearest-first (EUR / USD / ≈ GBP),
+7. 💰 **Card Prices** and 🖼️ **Card Gallery** — every card dearest-first (EUR / USD / ≈ GBP),
    and a 4-column grid of hosted card images. Both in collapsible callouts.
-7. 📜 **Deck List** — commander first, then mainboard alphabetically; pastes straight back
+8. 📜 **Deck List** — commander first, then mainboard alphabetically; pastes straight back
    into Moxfield or Arena.
-8. 🛒 **Cards to Complete the Deck** — what you're missing, plus a copy-paste 📋 Buy List.
-9. 💸 **Cheapest Build** — the whole deck at each card's cheapest Cardmarket printing, with a
+9. 🛒 **Cards to Complete the Deck** — what you're missing, plus a copy-paste 📋 Buy List.
+10. 💸 **Cheapest Build** — the whole deck at each card's cheapest Cardmarket printing, with a
    decklist carrying `(SET) 123` pins for the exact printings.
-10. 🛒 **Cards to Complete — Cheapest Build** — the same missing cards at those cheapest
+11. 🛒 **Cards to Complete — Cheapest Build** — the same missing cards at those cheapest
     printings, with per-card savings and a 📋 Budget Buy List.
 </details>
 

@@ -46,7 +46,14 @@ Everything else in the note is off-limits. The importer preserves this
 section across --force/--recheck, same as the review sections.
 
 **Use `###` or smaller headings inside the guide — never `##`** (a `##` would
-break the section-preservation regex).
+break the section-preservation regex, and `##` headings are what the note's
+🗂️ Contents table lists).
+
+**Then tick the 🗂️ Contents row.** Notes open with a `## 🗂️ Contents` table
+listing every section; hand-written ones carry a `— ✍️ *empty*` marker until
+they have content. Drop that marker from the 🧭 Deck Guide row (leave the rest
+of the cell as-is) so the table doesn't call your new guide empty. If the note
+has no Contents table yet, leave it alone — the next `--recheck` builds one.
 
 **Never hard-wrap prose.** Obsidian renders every single newline as a real
 line break, so 80-column wrapping shows as ragged lines mid-sentence. Write

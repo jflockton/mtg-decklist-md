@@ -1579,6 +1579,77 @@ REVIEW_SECTIONS = ["🧠 First Impressions", "💪 Strengths", "⚠️ Weaknesse
 ANALYSIS_SECTIONS = ["🎮 Play Pattern", "🏆 Win Conditions",
                      "⚠️ Interactions & Warnings"]
 
+# 🗂️ Contents — a table of the note's own sections, rebuilt from the finished
+# note on every write, so it can never list a section that isn't there. Sits
+# directly under the commander art, above the first section.
+TOC_HEADING = "🗂️ Contents"
+TOC_BLURBS = {
+    "🧠 First Impressions": "Your first read on the deck",
+    "💪 Strengths": "What it does well",
+    "⚠️ Weaknesses": "Where it falls over",
+    "🔄 Cards to Consider Swapping": "Swap ideas",
+    "📝 Play Notes": "What actually happened at the table",
+    "🧭 Deck Guide": "Full strategy guide: every card by role, play pattern, "
+                     "bracket, budget swaps, upgrade path",
+    "📊 Deck Shape": "Type counts, mana curve, role tags, bracket checklist "
+                     "*(computed — refreshes on every recheck)*",
+    "🎮 Play Pattern": "How the turns go",
+    "🏆 Win Conditions": "How it actually closes a game",
+    "⚠️ Interactions & Warnings": "Rules traps and anti-synergies",
+    "💰 Card Prices": "Every card dearest-first, plus the full card gallery",
+    "🎟️ Tokens & Extras": "Tokens the deck needs — kept off the deck total",
+    "📜 Deck List": "The list as built, for pasting back into a deck site",
+    "🛒 Cards to Complete the Deck": "What's still missing, at the deck's own "
+                                     "printings",
+    "💸 Cheapest Build": "The same deck with every card at its cheapest "
+                         "printing",
+    "🛒 Cards to Complete — Cheapest Build": "What's still missing, at those "
+                                             "cheapest printings",
+    "💰 Collection Value": "What the collection is worth",
+}
+
+
+def render_toc(text: str) -> str:
+    """Build the 🗂️ Contents table by reading the finished note's own `##`
+    headings, so optional sections (🎟️ Tokens & Extras, the 🛒 buy lists) are
+    listed only when the note actually has them. Hand-written sections that are
+    still `-` are marked empty — that's the part worth seeing at a glance.
+    """
+    written_by_hand = set(REVIEW_SECTIONS) | set(ANALYSIS_SECTIONS)
+    rows = []
+    for m in re.finditer(r"^## (.+)$", text, re.M):
+        heading = m.group(1).strip()
+        if heading == TOC_HEADING:
+            continue
+        blurb = TOC_BLURBS.get(heading, "")
+        if heading in written_by_hand:
+            rest = text[m.end():]
+            end = re.search(r"\n## ", rest)
+            body = (rest[:end.start()] if end else rest).strip()
+            if not body or body == "-":
+                blurb = f"{blurb} — ✍️ *empty*" if blurb else "✍️ *empty*"
+        rows.append(f"| [[#{heading}]] | {blurb} |")
+    if not rows:
+        return ""
+    return (f"## {TOC_HEADING}\n\n| Section | What's in it |\n"
+            "|---------|--------------|\n" + "\n".join(rows))
+
+
+def insert_toc(text: str) -> str:
+    """Drop any existing 🗂️ Contents block and place a freshly built one under
+    the commander art, above the first section. Idempotent, so every write path
+    can call it — including the `--reimport` splice, which never rebuilds the
+    note from the template.
+    """
+    text = re.sub(rf"\n*## {re.escape(TOC_HEADING)}\n.*?(?=\n## |\Z)", "",
+                  text, count=1, flags=re.S)
+    toc = render_toc(text)
+    first = re.search(r"^## ", text, re.M)
+    if not toc or not first:
+        return text
+    head = text[:first.start()].rstrip("\n")
+    return f"{head}\n\n{toc}\n\n{text[first.start():]}"
+
 # WotC's Commander Bracket "Game Changers" list — best-effort snapshot
 # (April 2025 update); refresh from the official list when brackets change.
 GAME_CHANGERS = {n.lower() for n in [
@@ -2670,7 +2741,7 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
         analysis_block = f"{shape_section}\n\n{analysis_block}"
     history_block = f"\n{render_history(history)}\n" if history else ""
 
-    return f"""---
+    return insert_toc(f"""---
 tags: [mtg, deck, commander]
 created: {today}
 commander: {commander_line}
@@ -2705,7 +2776,7 @@ price-date: {today}
 ```{tokens_section}{buy_section}
 
 {render_budget_list(decklist, report, choices, cheap)}{cheap_buy_section}
-"""
+""")
 
 
 def render_value_block(report: dict, today: str, buy: dict | None = None,
@@ -3673,7 +3744,10 @@ def reimport(out_dir: Path, deck_id: int | None) -> None:
         else:
             text = text.replace("## 📜 Deck List", f"{gallery}\n\n## 📜 Deck List", 1)
 
-        note.write_text(text, encoding="utf-8")
+        # --reimport never rebuilds from the template, so refresh the Contents
+        # table here too — it's idempotent, and a spliced note can gain or lose
+        # its 🖼️ gallery/section shape.
+        note.write_text(insert_toc(text), encoding="utf-8")
         changed = (f" — list changed, run --recheck {did} to refresh prices"
                    if list_changed else "")
         print(f"[{did}] {deck_name_of(note)}: list + art refreshed "
