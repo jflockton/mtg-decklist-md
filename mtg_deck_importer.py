@@ -1574,6 +1574,12 @@ REVIEW_SECTIONS = ["🧠 First Impressions", "💪 Strengths", "⚠️ Weaknesse
                    "🔄 Cards to Consider Swapping", "📝 Play Notes",
                    "🧭 Deck Guide"]
 
+# Retired stubs: no longer created on a fresh note (the 🧭 Deck Guide covers
+# this ground), but still read back and re-emitted in place if an existing note
+# has prose under them, so a rebuild never eats what you wrote.
+RETIRED_REVIEW_SECTIONS = {"💪 Strengths", "⚠️ Weaknesses",
+                           "🔄 Cards to Consider Swapping", "📝 Play Notes"}
+
 # Analysis prose — written per deck (by you, or by Claude via the
 # /analyse-deck skill) and preserved across rebuilds exactly like reviews.
 ANALYSIS_SECTIONS = ["🎮 Play Pattern", "🏆 Win Conditions",
@@ -2731,7 +2737,9 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
     else:
         buy_section = cheap_buy_section = ""
     review_block = "\n\n".join(
-        f"## {heading}\n\n{reviews.get(heading, '-')}" for heading in REVIEW_SECTIONS
+        f"## {heading}\n\n{reviews.get(heading, '-')}"
+        for heading in REVIEW_SECTIONS
+        if reviews.get(heading) or heading not in RETIRED_REVIEW_SECTIONS
     )
     # A written 🧭 Deck Guide already covers play pattern, win conditions and
     # rules traps in its own ### blocks, so don't also emit empty stubs for them

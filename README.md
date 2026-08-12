@@ -343,9 +343,11 @@ refresh, since none of them price anything.
    still holding their `-` placeholder are marked **✍️ *empty***, so the table doubles as a
    checklist of what you've yet to write. Rebuilt on every write — import, `--force`,
    `--recheck` **and** `--reimport` (the one path that splices rather than regenerating).
-5. ✍️ **Your review sections** — 🧠 First Impressions · 💪 Strengths · ⚠️ Weaknesses ·
-   🔄 Cards to Consider Swapping · 📝 Play Notes · 🧭 Deck Guide. Empty headings,
-   **preserved through every rebuild**.
+5. ✍️ **Your review sections** — 🧠 First Impressions · 🧭 Deck Guide. Empty headings,
+   **preserved through every rebuild**. The old 💪 Strengths · ⚠️ Weaknesses ·
+   🔄 Cards to Consider Swapping · 📝 Play Notes stubs are no longer created — the
+   🧭 Deck Guide covers that ground — but an older note that has prose under any of
+   them keeps it, in place, through every rebuild.
 6. 📊 **Deck Shape** — locally computed, no AI: type counts, mana curve, keyword role
    buckets, and a bracket checklist (Game Changers, extra turns, mass land denial). Followed
    by three more preserved headings — 🎮 Play Pattern · 🏆 Win Conditions ·
