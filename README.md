@@ -349,7 +349,11 @@ refresh, since none of them price anything.
 6. 📊 **Deck Shape** — locally computed, no AI: type counts, mana curve, keyword role
    buckets, and a bracket checklist (Game Changers, extra turns, mass land denial). Followed
    by three more preserved headings — 🎮 Play Pattern · 🏆 Win Conditions ·
-   ⚠️ Interactions & Warnings — for you or `/analyse-deck` to fill.
+   ⚠️ Interactions & Warnings — for you or `/analyse-deck` to fill. **A written
+   🧭 Deck Guide takes ownership of those three subjects** (it covers them in its own
+   `###` blocks), so `/deck-guide` deletes the empty stubs and a rebuild stops emitting
+   them — no duplicated prose, and no headings left inviting you to write it twice. Any
+   of the three that already holds prose is kept for good, guide or no guide.
 7. 💰 **Card Prices** and 🖼️ **Card Gallery** — every card dearest-first (EUR / USD / ≈ GBP),
    and a 4-column grid of hosted card images. Both in collapsible callouts.
 8. 📜 **Deck List** — commander first, then mainboard alphabetically; pastes straight back
@@ -426,8 +430,8 @@ specific preserved heading, never touching the generated data around it.
 
 | Skill | Writes into | What it does |
 |-------|-------------|--------------|
-| `/analyse-deck <id>` | 🎮 Play Pattern · 🏆 Win Conditions · ⚠️ Interactions & Warnings | Deliberately token-lean: its only input is the deck's `--brief` file, never the full note. Run `--brief <id>` first. |
-| `/deck-guide <id>` | 🧭 Deck Guide | A full strategy guide — the 100 by role, play pattern, non-obvious warnings, bracket justification, budget notes with cheaper alternatives, and an upgrade path. |
+| `/analyse-deck <id>` | 🎮 Play Pattern · 🏆 Win Conditions · ⚠️ Interactions & Warnings | Deliberately token-lean: its only input is the deck's `--brief` file, never the full note. Run `--brief <id>` first. Stops if the deck already has a 🧭 Deck Guide, which owns those three subjects. |
+| `/deck-guide <id>` | 🧭 Deck Guide | A full strategy guide — the 100 by role, play pattern, win conditions, non-obvious warnings, bracket justification, budget notes with cheaper alternatives, and an upgrade path. Deletes the three empty analysis stubs it supersedes (never one with prose in it) and fixes up the 🗂️ Contents table. |
 
 Both are coupled to this project on purpose: `analyse-deck` consumes the `--brief` format, and
 `deck-guide` writes into headings the importer preserves. A skill that only needs the *notes*

@@ -2733,12 +2733,19 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
     review_block = "\n\n".join(
         f"## {heading}\n\n{reviews.get(heading, '-')}" for heading in REVIEW_SECTIONS
     )
-    analysis_block = "\n\n".join(
+    # A written 🧭 Deck Guide already covers play pattern, win conditions and
+    # rules traps in its own ### blocks, so don't also emit empty stubs for them
+    # — /deck-guide deletes those, and a rebuild shouldn't put them back. A
+    # section that HAS prose (from /analyse-deck, or by hand) always survives.
+    guide_written = bool(reviews.get("🧭 Deck Guide"))
+    analysis_parts = [
         f"## {heading}\n\n{reviews.get(heading, '-')}"
         for heading in ANALYSIS_SECTIONS
-    )
-    if shape_section:
-        analysis_block = f"{shape_section}\n\n{analysis_block}"
+        if reviews.get(heading) or not guide_written
+    ]
+    if shape_section:  # joined here so dropping every stub leaves no blank run
+        analysis_parts.insert(0, shape_section)
+    analysis_block = "\n\n".join(analysis_parts)
     history_block = f"\n{render_history(history)}\n" if history else ""
 
     return insert_toc(f"""---

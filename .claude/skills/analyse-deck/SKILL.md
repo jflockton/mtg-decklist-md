@@ -31,6 +31,13 @@ the brief — spend tokens on thinking, not on reading.
    rows you filled (leave the rest of each cell as-is). If the note has no
    Contents table yet, leave it — the next `--recheck` builds one.
 
+**If the three headings aren't in the note at all, stop and say so.** A written
+`## 🧭 Deck Guide` owns play pattern, win conditions and rules traps in its own
+`###` blocks, and `/deck-guide` deletes the standalone stubs when it writes one
+(the importer then stops re-emitting them). Don't re-add the headings — you'd
+be duplicating the guide. Report that the deck already has a guide covering it,
+and offer `/deck-guide <id>` as the way to refresh that instead.
+
 ## What to write
 
 - **🎮 Play Pattern** — turns 1–3, mid-game, and how the deck closes;

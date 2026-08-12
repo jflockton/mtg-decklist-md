@@ -41,19 +41,52 @@ or the importer script — this skill works from any session.
 
 ## Where the guide goes
 
-Replace the body of the `## 🧭 Deck Guide` section (it is `-` when empty).
-Everything else in the note is off-limits. The importer preserves this
-section across --force/--recheck, same as the review sections.
+Replace the body of the `## 🧭 Deck Guide` section (it is `-` when empty). The
+importer preserves this section across --force/--recheck, same as the review
+sections. Apart from the two edits below, everything else in the note is
+off-limits.
+
+**Delete the three empty analysis stubs.** The guide covers play pattern, win
+conditions and rules traps in its own `###` blocks, so the standalone versions
+would only duplicate it. Remove the heading *and* its `-` body for each of:
+
+```
+## 🎮 Play Pattern
+
+-
+
+## 🏆 Win Conditions
+
+-
+
+## ⚠️ Interactions & Warnings
+
+-
+```
+
+**Only delete a stub that is still `-`.** If a section already has prose in it
+(from `/analyse-deck`, or written by hand), leave that section completely
+alone — do not delete it, do not rewrite it, and reference it from the guide
+rather than contradicting it. Mention in your sign-off which ones you left.
+
+The importer follows the same rule: once 🧭 Deck Guide has content, a rebuild
+stops emitting empty stubs for those three, so they won't come back on the next
+`--recheck` — but any that still hold prose are kept forever.
 
 **Use `###` or smaller headings inside the guide — never `##`** (a `##` would
 break the section-preservation regex, and `##` headings are what the note's
 🗂️ Contents table lists).
 
-**Then tick the 🗂️ Contents row.** Notes open with a `## 🗂️ Contents` table
-listing every section; hand-written ones carry a `— ✍️ *empty*` marker until
-they have content. Drop that marker from the 🧭 Deck Guide row (leave the rest
-of the cell as-is) so the table doesn't call your new guide empty. If the note
-has no Contents table yet, leave it alone — the next `--recheck` builds one.
+**Then fix up the 🗂️ Contents table.** Notes open with a `## 🗂️ Contents` table
+listing every section, one row each. Two edits, both required:
+
+- Drop the `— ✍️ *empty*` marker from the 🧭 Deck Guide row (leave the rest of
+  the cell as-is) so the table doesn't call your new guide empty.
+- **Delete the rows for the stubs you removed.** A row whose section no longer
+  exists is a dead link. Only delete rows for sections you actually deleted.
+
+If the note has no Contents table yet, leave it alone — the next `--recheck`
+builds one from the note's real headings.
 
 **Never hard-wrap prose.** Obsidian renders every single newline as a real
 line break, so 80-column wrapping shows as ragged lines mid-sentence. Write
@@ -82,12 +115,18 @@ colourless {C} as ◇.
    only where a card is non-obvious; plain lists where it isn't. The
    categories should teach how the deck is shaped.
 2. **🎮 Play pattern** — turns 1–2 / 3–4 / 5+ and how the deck closes out;
-   name the actual cards in each phase.
-3. **⚠️ Warnings & non-obvious interactions** — numbered; rules traps,
-   anti-synergies, table-politics warnings (mark salt with ⚠️).
-4. **✅ Bracket justification** — Game Changer count, mass land denial,
+   name the actual cards in each phase. Sequencing specific to THIS list (what
+   to play first, what to hold), not generic Commander advice.
+3. **🏆 Win conditions** — numbered, primary first, naming exact cards. Say
+   plainly if the deck has no fast kill and wins on attrition. List every
+   piece of any infinite combo explicitly. This block replaces the standalone
+   🏆 Win Conditions section you deleted, so it has to stand on its own.
+4. **⚠️ Warnings & non-obvious interactions** — numbered; rules traps,
+   anti-synergies, table-politics warnings (mark salt with ⚠️). Rules-TRUE
+   only: if you are unsure a ruling is right, check Scryfall or leave it out.
+5. **✅ Bracket justification** — Game Changer count, mass land denial,
    extra turns, two-card infinites, tutor count; state the bracket it fits.
-5. **💰 Budget notes** — use the note's own price data; GBP-first (James is
+6. **💰 Budget notes** — use the note's own price data; GBP-first (James is
    UK — recommend Cardmarket/Magic Madhouse, warn about US shipping); name
    the expensive cards and what to cut to hit a lower budget.
    **Always include a cheaper-alternatives table** for the deck's priciest
@@ -99,7 +138,7 @@ colourless {C} as ◇.
    flag when a swap also changes the bracket (e.g. cutting a Game Changer).
    For a deck James already fully owns, frame it as "which cards could move
    to another deck and what would slot in here" rather than a buy decision.
-6. **📈 Upgrade path** — ordered next-buys toward the bracket above.
+7. **📈 Upgrade path** — ordered next-buys toward the bracket above.
 
 ## Voice
 
@@ -111,7 +150,9 @@ magazine article.
 ## Afterwards
 
 Tell James the guide is in, with a 2–3 sentence summary of the deck's plan
-and the one warning he most needs to know. Do not run the importer.
+and the one warning he most needs to know. Say which of the three analysis
+stubs you removed, and name any you left in place because they already had
+prose. Do not run the importer.
 
 ## Vault linking convention
 
