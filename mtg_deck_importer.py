@@ -1286,9 +1286,17 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
     prices: dict[str, dict] = {}
     for i in range(0, len(names), 75):  # collection endpoint caps at 75 cards
         chunk = names[i:i + 75]
+        # The collection endpoint matches a FACE name, not the combined
+        # "Front // Back" one a decklist carries — asking for the full name puts
+        # every double-faced card, transforming legend and adventure creature in
+        # not_found, which used to drop them out of 📊 Deck Shape and leave
+        # --brief with no oracle text for them. Ask by front face for those.
+        ask = [n.split("//")[0].strip() if "//" in n else n for n in chunk]
         r = http("POST", SCRYFALL_COLLECTION,
-                 json={"identifiers": [{"name": n} for n in chunk]})
+                 json={"identifiers": [{"name": n} for n in ask]})
         r.raise_for_status()
+        # front-face name (as asked) -> full decklist name (as written)
+        asked_as = {a.lower(): n for a, n in zip(ask, chunk) if a != n}
         for card in r.json().get("data", []):
             p = card.get("prices", {})
             faces = card.get("card_faces") or []
@@ -1312,7 +1320,12 @@ def fetch_prices(names: list[str]) -> dict[str, dict]:
             prices[card["name"].lower()] = entry
             # Let a front-face name find its double-faced card
             if "//" in card["name"]:
-                prices.setdefault(card["name"].split("//")[0].strip().lower(), entry)
+                front = card["name"].split("//")[0].strip().lower()
+                prices.setdefault(front, entry)
+                # ...and let the name the decklist actually wrote find it too,
+                # even when that differs from Scryfall's combined name
+                if front in asked_as:
+                    prices.setdefault(asked_as[front].lower(), entry)
 
     # The collection endpoint returns one arbitrary printing per card, which
     # can be an online-only set with no paper prices (e.g. Tempest Remastered
@@ -1647,14 +1660,22 @@ def insert_toc(text: str) -> str:
     can call it — including the `--reimport` splice, which never rebuilds the
     note from the template.
     """
-    text = re.sub(rf"\n*## {re.escape(TOC_HEADING)}\n.*?(?=\n## |\Z)", "",
-                  text, count=1, flags=re.S)
+    # \r?-tolerant throughout: build_note passes LF text, but a caller working on
+    # a note already written to disk gets CRLF (write_text translates newlines on
+    # Windows). An LF-only pattern silently fails to find the old block there and
+    # leaves the note with two Contents tables.
+    text = re.sub(rf"(\r?\n)*## {re.escape(TOC_HEADING)}\r?\n.*?(?=\r?\n## |\Z)",
+                  "", text, count=1, flags=re.S)
     toc = render_toc(text)
     first = re.search(r"^## ", text, re.M)
     if not toc or not first:
         return text
-    head = text[:first.start()].rstrip("\n")
-    return f"{head}\n\n{toc}\n\n{text[first.start():]}"
+    # Join with whatever the text already uses, so a CRLF note doesn't come back
+    # with an LF block spliced into the middle of it
+    nl = "\r\n" if "\r\n" in text else "\n"
+    toc = toc.replace("\n", nl)
+    head = text[:first.start()].rstrip("\r\n")
+    return f"{head}{nl}{nl}{toc}{nl}{nl}{text[first.start():]}"
 
 # WotC's Commander Bracket "Game Changers" list — best-effort snapshot
 # (April 2025 update); refresh from the official list when brackets change.
