@@ -225,6 +225,16 @@ began at 175/811 purely from `_Collection.md`. **Re-running preserves every tick
 re-pricing the list, so it survives years of use. A tick is never removed by a refresh, so a
 card you own but haven't added to your collection file stays ticked.
 
+Every run ends with an **Added** line — how many boxes this refresh ticked that weren't ticked
+before, so after a `--merge-collection` you can see exactly what the new cards bought you:
+
+```text
+Added:     +12 since the last refresh (175 → 187 of 811)
+```
+
+A bare `--set` totals it across every checklist, and the count also lands in each note as
+`printings-added:` in the frontmatter and an **Added:** line in the body.
+
 It's one line per **card**, at its cheapest printing across the sets you listed — not one per
 printing. Chasing every borderless/showcase/foil variant of a premium set runs into five
 figures; this keeps it a collection rather than a mortgage. Digital-only cards (Arena's

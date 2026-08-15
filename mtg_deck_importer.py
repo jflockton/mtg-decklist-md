@@ -2293,7 +2293,7 @@ def _existing_ticks(note: Path) -> set[str]:
 
 
 def set_collection(out_dir: Path, codes: list[str], label: str | None = None,
-                   reset: bool = False) -> None:
+                   reset: bool = False) -> int:
     """--set: build or refresh a printing-by-printing collection checklist.
 
     One line per printing, grouped by product then treatment and ordered by
@@ -2301,6 +2301,9 @@ def set_collection(out_dir: Path, codes: list[str], label: str | None = None,
     box means you have that printing; ticks come from your collection file
     (where it records the id) or from you, and survive every refresh. The note
     is located by the set codes in its frontmatter, so it can be renamed freely.
+
+    Returns how many boxes this run ticked that weren't ticked before — the
+    "what did that collection update actually buy me?" number.
     """
     printings = fetch_set_printings(codes)
     if not printings:
@@ -2316,6 +2319,7 @@ def set_collection(out_dir: Path, codes: list[str], label: str | None = None,
                 label = _note_label(prior)
             break
     name = label or ", ".join(c.upper() for c in codes)
+    first_build = note is None
     if note is None:
         safe = ILLEGAL_FILENAME_CHARS.sub("", name)
         note = out_dir / f"_Collection - {safe}.md"
@@ -2404,6 +2408,24 @@ def set_collection(out_dir: Path, codes: list[str], label: str | None = None,
                           f"· £{t_cost:,.2f} to go\n\n{body}")
 
     already = done - by_id - by_name   # ticks the note already held
+    added = by_id + by_name            # what this run newly ticked
+    # The headline answer to "I've just merged a collection update — what did
+    # it actually add here?". On a first build every tick is new, so saying
+    # "since the last refresh" would be a lie; phrase it by which run this is.
+    if first_build:
+        added_line = (f"**Added: {added}** — this checklist is new, so every "
+                      f"tick came from your collection file.")
+        added_console = f"Added:     {added} ticked from your collection (new checklist)"
+    elif added:
+        added_line = (f"**Added: +{added} since the last refresh** "
+                      f"({already} → {done} of {len(printings)}).")
+        added_console = (f"Added:     +{added} since the last refresh "
+                         f"({already} → {done} of {len(printings)})")
+    else:
+        added_line = (f"**Added: nothing new since the last refresh** — still "
+                      f"{done} of {len(printings)}.")
+        added_console = (f"Added:     nothing new since the last refresh "
+                         f"— still {done}/{len(printings)}")
     warn = (f" ⚠️ {needs_id} cards are in your collection by name but have several "
             f"printings here — they need an id before they can count."
             if needs_id else "")
@@ -2415,6 +2437,7 @@ updated: {date.today().isoformat()}
 set-codes: {", ".join(codes)}
 printings-total: {len(printings)}
 printings-owned: {done}
+printings-added: {added}
 distinct-cards: {distinct}
 cost-remaining-gbp: {left_cost:.2f}
 project: "{PROJECT_LINK}"
@@ -2430,7 +2453,7 @@ Every printing has its own line, because a different art is a different card to 
 
 **To tick a box:** record the card in `_Collection.md` with its id — `1 Sol Ring (FIC) 357` — and the matching box ticks itself on the next `--set`. Or tick it here by hand; ticks are never removed by a refresh.
 
-**Ticked: {done} of {len(printings)}** — {by_id} newly matched by id, {by_name} by name (cards with only one printing), {already} already ticked before this run.{warn}
+{added_line} {by_id} newly matched by id, {by_name} by name (cards with only one printing), {already} already ticked before this run.{warn}
 
 | Product | Have | Left to buy |
 |---------|-----:|------------:|
@@ -2443,10 +2466,12 @@ Every printing has its own line, because a different art is a different card to 
           f"({distinct} distinct cards)")
     print(f"Progress:  {done}/{len(printings)} ticked ({pct:.0f}%)"
           f" — £{left_cost:,.2f} of £{total_cost:,.2f} still to buy")
+    print(added_console)
     print(f"           {by_id} new by id, {by_name} new by name,"
           f" {already} already ticked"
           + (f", {needs_id} need an id" if needs_id else ""))
     print(f"Note:      {note}")
+    return added
 
 
 BRIEFS_DIR = "_analysis-briefs"
@@ -4113,13 +4138,19 @@ def main() -> None:
                          "  python mtg_deck_importer.py --set ff\n"
                          "  python mtg_deck_importer.py --set fin,fic "
                          "--set-label \"Final Fantasy\"")
+            total_added = refreshed = 0
             for note in notes:
                 codes = _note_set_codes(note)
                 if not codes:
                     print(f"Skipped:   {note.name} has no set-codes: line")
                     continue
-                set_collection(out_dir, codes, args.set_label or _note_label(note),
-                               reset=args.set_reset)
+                total_added += set_collection(
+                    out_dir, codes, args.set_label or _note_label(note),
+                    reset=args.set_reset)
+                refreshed += 1
+            if refreshed > 1:
+                print(f"\nAdded:     +{total_added} newly ticked across "
+                      f"{refreshed} checklists")
             return
         codes, label = resolve_set_target(out_dir, args.set_codes)
         if not codes:
