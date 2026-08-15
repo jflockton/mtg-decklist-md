@@ -15,11 +15,12 @@ python mtg_deck_importer.py https://moxfield.com/decks/<public_id>
 ```
 Deck:      Doom Prevails (id 4)
 Commander: Doctor Doom, King of Latveria
+Colours:   🔵⚫🔴
 Cards:     100 (88 unique)
 Value:     ~EUR 141.02 / GBP 120.66 / USD 150.11 / TIX 62.30
 Owned:     88/88 cards — to buy: 0 (~EUR 0.00 / ~EUR 0.00 at cheapest versions)
-Note:      ...\Doctor Doom, King of Latveria.md
-Artwork:   ...\Attachments\Doctor Doom, King of Latveria.jpg
+Note:      ...\Doctor Doom, King of Latveria 🔵⚫🔴.md
+Artwork:   ...\Attachments\Doctor Doom, King of Latveria 🔵⚫🔴.jpg
 ```
 
 Run it again next month and it re-prices the lot, charts the trend, and shouts when a card
@@ -135,9 +136,9 @@ notes. A note counts as the *same deck* when its `deck-url` or `deck-name` match
 the import date — matched by frontmatter, not filename — and `--force` updates it in place keeping its existing filename.
 
 **Multiple builds per commander** are fine. The first is named
-`<Commander>.md`; another build of the same commander gets a
-`" - <deck name>"` suffix instead of colliding — so name your `.txt` files meaningfully
-(`Cloud Limit Break Precon.txt` becomes that deck's name).
+`<Commander> <colours>.md`; another build of the same commander gets a
+`" - <deck name>"` suffix before the colours instead of colliding — so name your `.txt`
+files meaningfully (`Cloud Limit Break Precon.txt` becomes that deck's name).
 </details>
 
 ## 🗃️ Your collection
@@ -290,13 +291,19 @@ the deck's cards that source actually priced.
 
 | Path | What it is |
 |------|------------|
-| `<Commander>.md` | The deck note — one per deck |
-| `Attachments/<Commander>.jpg` | Commander art (offline backup) |
+| `<Commander> <colours>.md` | The deck note — one per deck |
+| `Attachments/<same stem>.jpg` | Commander art (offline backup) |
 | `_Decks.md` | Auto-generated master index of every deck — never edit by hand |
 | `imports/` | Archived `.txt` decklists, so any machine can re-import |
 | `_analysis-briefs/` | `--brief` output |
 | `_Collection - <name>.md` | `--set` collection checklists (sorted to the top) |
 | `.price-history.json` | Dated price snapshots behind the 📉 Price History tables |
+
+`<colours>` is the commander's **colour identity as coloured circles** — ⚪ white, 🔵 blue,
+⚫ black, 🔴 red, 🟢 green (◇ for a colourless commander), always in WUBRG order. The same
+suffix ends the `deck-name:` frontmatter and the note's title, so a deck's colours are
+visible at a glance in the file list, the graph and `_Decks.md` alike. New imports get it
+automatically; `--colorize` stamps it onto decks imported before the feature existed.
 
 Nothing here is the card database — that lives in the repo's `.cache/`, not your vault, so it
 never syncs to Dropbox.
@@ -387,6 +394,7 @@ flag too.
 | `--delete [id]` | Delete a deck and **everything it owns** — note, commander art, archived `.txt`, brief, price-history entry. Shows the exact file list and confirms first; `-y` skips the prompt. Reindexes afterwards. |
 | `--reindex` | Renumber every note to a gap-free, unique `1..N` sequence, fixing ids gone missing or duplicated; remaps history and briefs. Runs automatically after `--delete`. |
 | `--index` | Rebuild `_Decks.md` from the notes' current frontmatter. No network. (Also runs after every import and recheck.) |
+| `--colorize` | One-shot backfill: append each deck's commander colour identity (⚪🔵⚫🔴🟢) to its note filename, `deck-name` and title, rewriting wiki-links to the renamed notes. New imports don't need it — they get the suffix at creation. Idempotent. |
 | **Collection** | |
 | `--collection <file>` | **Create** the collection file from an export. Refuses to overwrite a populated collection unless you add `--force`. |
 | `--merge-collection <file>` | **Add to** an existing collection — append-only. Cards missing from the export are only *reported*, never deleted. |

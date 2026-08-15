@@ -35,8 +35,11 @@ Contract with the vault
     Whatever you write under the review headings is preserved through every
     rebuild — the generated data around it is what gets refreshed.
 
-    Output note:  <Deck Name>.md
-    Output image: Attachments/<Deck Name>.jpg
+    Output note:  <Commander> <colour emojis>.md   (e.g. "Krenko, Mob Boss 🔴")
+    Output image: Attachments/<same stem>.jpg
+    The trailing ⚪🔵⚫🔴🟢 circles are the commander's colour identity; they
+    also end the deck-name frontmatter and the H1. --colorize stamps them onto
+    decks imported before the feature existed.
 """
 
 import argparse
@@ -79,6 +82,27 @@ ARCHIDEKT_API = "https://archidekt.com/api/decks/{deck_id}/"
 
 # Windows-illegal filename characters (commas are fine and kept)
 ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
+
+# Commander colour identity -> coloured circle emoji, appended to the end of a
+# deck's name (note filename, deck-name frontmatter and H1) in WUBRG order —
+# the colour wheel order printed on the back of every Magic card.
+COLOR_EMOJI = {"W": "⚪", "U": "🔵", "B": "⚫", "R": "🔴", "G": "🟢"}
+COLORLESS_EMOJI = "◇"  # colourless decks (Kozilek et al.) still get a marker
+COLOR_SUFFIX_RE = re.compile(r"\s*[⚪🔵⚫🔴🟢◇]+\s*$")
+
+
+def strip_colors(name: str) -> str:
+    """A deck name without its trailing colour-emoji suffix — the canonical
+    name every match/compare runs on, so a suffixed and an unsuffixed spelling
+    of the same deck are still the same deck.
+    """
+    return COLOR_SUFFIX_RE.sub("", name).rstrip()
+
+
+def color_suffix_of(name: str) -> str:
+    """The trailing colour-emoji run of a deck name, or '' if it has none."""
+    m = COLOR_SUFFIX_RE.search(name)
+    return m.group().strip() if m else ""
 
 # Moxfield export decorations after a card name: foil/etched markers (*F*),
 # collector info like (PLST) 123 — strip so names match Scryfall
@@ -1256,6 +1280,32 @@ def fetch_deck(url: str) -> dict:
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
+
+def commander_color_suffix(commanders: list[str]) -> str:
+    """The deck's colour identity as emoji circles — the union of every
+    commander's color_identity, in WUBRG order. Looked up live (the bulk DB
+    doesn't store colour identity; two small requests at most). A failed
+    lookup returns '' loudly rather than aborting a whole import over a
+    cosmetic suffix.
+    """
+    identity: set[str] = set()
+    for name in commanders:
+        card = None
+        # Full name first — 'SP//dr, Piloted by Peni' has // INSIDE its name —
+        # then the front face, which is how double-faced legends resolve.
+        for ask in dict.fromkeys((name, name.split("//")[0].strip())):
+            r = http("GET", SCRYFALL_NAMED, params={"exact": ask})
+            if r.ok:
+                card = r.json()
+                break
+        if card is None:
+            print(f"Colours:   Scryfall lookup failed for '{name}' — "
+                  "no colour suffix added")
+            return ""
+        identity.update(card.get("color_identity") or [])
+    return ("".join(COLOR_EMOJI[c] for c in "WUBRG" if c in identity)
+            or COLORLESS_EMOJI)
+
 
 def fetch_commander_art(commander: str, dest: Path) -> str:
     """Download the card image to dest (offline backup) and return its
@@ -2446,7 +2496,10 @@ Sections still empty: {", ".join(todo) if todo else "none — already analysed"}
 """
     briefs = out_dir / BRIEFS_DIR
     briefs.mkdir(exist_ok=True)
-    dest = briefs / f"{deck_id:02d} - {ILLEGAL_FILENAME_CHARS.sub('', deck_name)}.md"
+    # Colour-free filename: colour emojis in the deck name are display-only,
+    # and a suffixed filename would orphan the pre-colour brief on re-run
+    dest = briefs / (f"{deck_id:02d} - "
+                     f"{ILLEGAL_FILENAME_CHARS.sub('', strip_colors(deck_name))}.md")
     dest.write_text(brief, encoding="utf-8")
     print(f"[{deck_id}] brief → {dest.name}"
           + (" (already analysed)" if not todo else ""))
@@ -2735,12 +2788,17 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
                buy: dict | None, collection_name: str | None,
                reviews: dict[str, str], choices: dict[str, dict],
                deck_id: int, history: list[dict] | None = None,
-               shape_section: str = "") -> str:
+               shape_section: str = "", colors: str = "") -> str:
     """The whole note. Reading order after the reviews: card prices &
     gallery, the deck list, what to buy to complete it, the Cheapest Build,
-    and what to buy to complete that.
+    and what to buy to complete that. colors is the commander colour-emoji
+    suffix, shown at the end of the deck's display name (frontmatter + H1)
+    but never stored in deck["name"] itself — matching and history stay on
+    the plain name.
     """
     today = date.today().isoformat()
+    display_name = (f"{strip_colors(deck['name'])} {colors}" if colors
+                    else deck["name"])
     commander_line = ", ".join(deck["commanders"])
     listing = render_deck_listing(decklist, deck.get("pins"))
     rates = report["rates"]
@@ -2781,7 +2839,7 @@ def build_note(deck: dict, decklist: list[tuple[int, str]],
 tags: [mtg, deck, commander]
 created: {today}
 commander: {commander_line}
-deck-name: {_fm_scalar(deck["name"])}
+deck-name: {_fm_scalar(display_name)}
 deck-url: {deck_url}
 deck-id: {deck_id}
 project: "{PROJECT_LINK}"
@@ -2789,7 +2847,7 @@ project: "{PROJECT_LINK}"
 price-date: {today}
 ---
 
-# 🃏 {deck["name"]}
+# 🃏 {display_name}
 
 **Commander:** {commander_line}
 **Format:** {deck["format"]}
@@ -3163,6 +3221,80 @@ it will be overwritten. **{len(ids)} decks** · {totals_line}
 """, encoding="utf-8")
 
 
+def _relink(out_dir: Path, renames: list[tuple[str, str]]) -> None:
+    """Rewrite [[wiki-links]] (and commander-art .jpg references) that point at
+    renamed notes, in every markdown file under the vault folder. The lookahead
+    stops a shorter stem hijacking a longer one that it prefixes ('Krenko, Mob
+    Boss' vs 'Krenko, Mob Boss - $100 …'): the next char after a whole link
+    target is always ], |, \\ or #, never more name.
+    """
+    for md in out_dir.rglob("*.md"):
+        text = md.read_text(encoding="utf-8")
+        new = text
+        for old, new_stem in renames:
+            new = re.sub(r"\[\[" + re.escape(old) + r"(?=[\]|\\#])",
+                         f"[[{new_stem}", new)
+            new = new.replace(f"{old}.jpg", f"{new_stem}.jpg")
+        if new != text:
+            md.write_text(new, encoding="utf-8")
+            print(f"Relinked:  {md.relative_to(out_dir)}")
+
+
+def colorize_decks(out_dir: Path) -> None:
+    """One-shot backfill (--colorize): stamp every existing deck note with its
+    commander colour identity — the note filename, commander art, deck-name
+    frontmatter and H1 all gain the emoji suffix that new imports now get at
+    creation. Wiki-links under the vault folder are rewritten to the renamed
+    notes. Idempotent: an already-suffixed deck is left alone (or re-suffixed,
+    if its commander's colours have changed).
+    """
+    ids = deck_id_map(out_dir)
+    if not ids:
+        sys.exit(f"No deck notes found in {out_dir}")
+    renames: list[tuple[str, str]] = []
+    for did in sorted(ids):
+        note = ids[did]
+        text = note.read_text(encoding="utf-8")
+        cmd_m = re.search(r"^commander: (.+)$", text, re.M)
+        if not cmd_m:
+            print(f"[{did}] {deck_name_of(note)}: no commander line — skipped")
+            continue
+        colors = commander_color_suffix([cmd_m.group(1).strip()])
+        if not colors:
+            print(f"[{did}] {deck_name_of(note)}: colours unknown — skipped")
+            continue
+
+        new_text = re.sub(
+            r"^deck-name: (.+)$",
+            lambda m: "deck-name: " + _fm_scalar(
+                f"{strip_colors(_fm_unquote(m.group(1)))} {colors}"),
+            text, count=1, flags=re.M)
+        new_text = re.sub(
+            r"^# 🃏 (.+)$",
+            lambda m: f"# 🃏 {strip_colors(m.group(1))} {colors}",
+            new_text, count=1, flags=re.M)
+        if new_text != text:
+            note.write_text(new_text, encoding="utf-8")
+
+        new_stem = f"{strip_colors(note.stem)} {colors}"
+        if new_stem == note.stem:
+            print(f"[{did}] {note.stem}: already suffixed")
+            continue
+        art = out_dir / "Attachments" / f"{note.stem}.jpg"
+        if art.is_file():
+            art.rename(art.with_name(f"{new_stem}.jpg"))
+        note.rename(note.with_name(f"{new_stem}.md"))
+        renames.append((note.stem, new_stem))
+        print(f"[{did}] {note.stem} → {new_stem}")
+
+    if renames:
+        _relink(out_dir, renames)
+    update_deck_index(out_dir)
+    print(f"Updated:   {DECKS_INDEX}"
+          + (f" — {len(renames)} note(s) renamed, wiki-links rewritten"
+             if renames else " — nothing needed renaming"))
+
+
 def next_deck_id(out_dir: Path) -> int:
     """The id to give a brand-new note: one past the highest already assigned.
     Does not touch existing notes (that is deck_id_map's job).
@@ -3444,6 +3576,11 @@ def _recheck_from_stored(did: int, note: Path, collection_name: str | None,
         "pins": _note_pins(text),
         "tokens": _note_tokens(text),
     }
+    # The stored name already carries the colour suffix (if the note has one);
+    # peel it off so matching/history stay on the plain name, and hand it back
+    # to build_note for display — no network needed in this offline fallback.
+    colors = color_suffix_of(deck["name"])
+    deck["name"] = strip_colors(deck["name"])
     deck_url = field(r"^deck-url: (.+)$")
     image_url = field(r"!\[[^\]]*\|290\]\(([^)]*)\)")
     created = field(r"^created: (.+)$")
@@ -3461,7 +3598,7 @@ def _recheck_from_stored(did: int, note: Path, collection_name: str | None,
     shape_section = render_deck_shape(deck_shape(decklist, prices))
     new_text = build_note(deck, decklist, image_url, deck_url, report, buy,
                           collection_name, extract_reviews(text), choices, did,
-                          history, shape_section)
+                          history, shape_section, colors)
     if created:  # keep the original import date, not the refresh date
         new_text = re.sub(r"^created: .*$", f"created: {created}", new_text,
                           count=1, flags=re.M)
@@ -3525,6 +3662,7 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
 
     primary = deck["commanders"][0]
     safe_name = ILLEGAL_FILENAME_CHARS.sub("", primary)
+    colors = commander_color_suffix(deck["commanders"])
 
     # A commander can have several builds (precon + enhanced, etc.). A note is
     # the SAME deck if its deck-url or deck-name matches; same-commander notes
@@ -3544,7 +3682,8 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
             url_match = candidate
             break
         if name_match is None and name_m and \
-           _fm_unquote(name_m.group(1)).lower() == deck["name"].lower():
+           strip_colors(_fm_unquote(name_m.group(1))).lower() == \
+           strip_colors(deck["name"]).lower():
             name_match = candidate
     match = url_match or name_match
     if match and not force:
@@ -3555,6 +3694,8 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
         others = list(out_dir.glob(f"{safe_name}*.md"))
         base = safe_name if not others else \
             f"{safe_name} - {ILLEGAL_FILENAME_CHARS.sub('', deck['name'])}"
+        if colors:  # new notes carry the colour identity in the filename
+            base = f"{base} {colors}"
         note_path = out_dir / f"{base}.md"
     stem = note_path.stem
 
@@ -3613,7 +3754,7 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
     shape_section = render_deck_shape(deck_shape(decklist, prices))
     new_text = build_note(deck, decklist, image_url, deck_url, report, buy,
                           collection_name, reviews, choices, deck_id, history,
-                          shape_section)
+                          shape_section, colors)
     # build_note stamps created: today. On a refresh of an existing note
     # (--force / --recheck) keep the ORIGINAL created date instead of resetting
     # it — matching --reimport and _recheck_from_stored.
@@ -3639,6 +3780,7 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
     totals = report["totals"]
     print(f"Deck:      {deck['name']} (id {deck_id})")
     print(f"Commander: {', '.join(deck['commanders'])}")
+    print(f"Colours:   {colors or 'unknown'}")
     print(f"Cards:     {total} ({len(decklist)} unique)")
     rates = report["rates"]
     gbp = f" / GBP {totals['eur'] * rates['eur_gbp']:,.2f}" if rates else ""
@@ -3870,6 +4012,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="write a compact analysis brief per deck (all, or one by ID) "
              "into the vault's _analysis-briefs/ — input for /analyse-deck")
     parser.add_argument(
+        "--colorize", action="store_true",
+        help="one-shot backfill: append each deck's commander colour identity "
+             "(⚪🔵⚫🔴🟢 circles) to its note filename, deck-name and title. "
+             "New imports get the suffix automatically; this stamps the decks "
+             "imported before the feature existed, rewrites wiki-links to the "
+             "renamed notes and rebuilds the index")
+    parser.add_argument(
         "--index", action="store_true",
         help="regenerate the _Decks.md master index from the notes' current "
              "frontmatter (no network; also runs after every import/recheck)")
@@ -3933,6 +4082,11 @@ def main() -> None:
         if args.source:
             parser.error("--reindex takes no other arguments.")
         reindex(resolve_out_dir())
+        return
+    if args.colorize:
+        if args.source:
+            parser.error("--colorize takes no other arguments.")
+        colorize_decks(resolve_out_dir())
         return
     if args.index:
         if args.source:
