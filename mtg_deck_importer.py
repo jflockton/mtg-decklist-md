@@ -152,6 +152,19 @@ def parse_card_line_full(
     return (qty, rest, set_code, number, foil, category) if rest else None
 
 
+def format_card_line(entry: dict) -> str:
+    """One {qty, name, set, num, foil} entry as a card line —
+    `2 Sol Ring (LTC) 268 ✨` — dropping whichever parts the source never
+    recorded. The inverse of parse_card_line_full.
+    """
+    line = f"{entry['qty']} {entry['name']}"
+    if entry.get("set"):
+        line += f" ({entry['set'].upper()})"
+        if entry.get("num"):
+            line += f" {entry['num']}"
+    return f"{line} ✨" if entry.get("foil") else line
+
+
 def read_collection_entries(path: Path) -> list[dict]:
     """Every card line in a collection file, keeping the detail the name-only
     view throws away: which printing, and whether it's foil.
@@ -765,8 +778,11 @@ def collection_path(out_dir: Path) -> Path:
 
 
 def add_deck_to_collection(out_dir: Path, deck_name: str,
-                           decklist: list[tuple[int, str]]) -> bool:
+                           decklist: list[tuple[int, str]],
+                           pins: dict[str, dict] | None = None) -> bool:
     """Append the whole deck under its own heading in _Collection.md (--own).
+    The deck's pins come along, so a bought precon lands in the collection at
+    the printings it actually ships rather than as bare names.
     Returns False if a section for this deck already exists.
     """
     path = collection_path(out_dir)
@@ -774,7 +790,11 @@ def add_deck_to_collection(out_dir: Path, deck_name: str,
     existing = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
     if heading.lower() in existing.lower():
         return False
-    listing = "\n".join(f"{qty} {name}" for qty, name in decklist)
+    listing = "\n".join(
+        format_card_line({"qty": qty, "name": name,
+                          **{k: (pins or {}).get(name.lower(), {}).get(k)
+                             for k in ("set", "num", "foil")}})
+        for qty, name in decklist)
     block = f"\n{heading} (added {date.today().isoformat()})\n\n{listing}\n"
     with open(path, "a", encoding="utf-8") as f:
         f.write(block)
@@ -784,33 +804,62 @@ def add_deck_to_collection(out_dir: Path, deck_name: str,
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 
 
-def read_card_list(list_path: str) -> dict[str, list]:
-    """Parse any card-list file (a store/Moxfield export, a deck list, a plain
-    list) into {lowercased name: [total qty, display name]}, merging duplicate
-    rows — exports split the same card across printings, and those copies are
-    all still copies you own.
+def _printing_sort_key(entry: dict) -> tuple:
+    """Alphabetical by name, then by printing — collector numbers sorted as
+    numbers so 2 lands before 10 rather than after it.
+    """
+    num = entry["num"] or ""
+    return (entry["name"].lower(), entry["set"] or "",
+            (0, int(num), "") if num.isdigit() else (1, 0, num), entry["foil"])
+
+
+def read_card_list(list_path: str) -> list[dict]:
+    """Parse any card-list file (a store/scanner/Moxfield export, a deck list,
+    a plain list) into one {qty, name, set, num, foil} entry per distinct
+    printing, merging rows that name the same printing.
+
+    Rows are deliberately NOT merged by name: a scanner export splitting a card
+    across printings is telling us which versions are in the box, and the
+    collection file has to keep that — without `(SET) number` a card can only be
+    priced at some arbitrary printing rather than the one you own.
     """
     src = Path(list_path)
     if not src.is_file():
         sys.exit(f"List file not found: {src.resolve()}")
-    cards: dict[str, list] = {}
+    cards: dict[tuple, dict] = {}
     for line in src.read_text(encoding="utf-8-sig").splitlines():
-        parsed = parse_card_line(line)
-        if parsed:
-            qty, disp = parsed
-            entry = cards.setdefault(disp.lower(), [0, disp])
-            entry[0] += qty
+        parsed = parse_card_line_full(line)
+        if not parsed:
+            continue
+        qty, name, set_code, num, foil, _cat = parsed
+        entry = cards.setdefault(
+            (name.lower(), set_code, num, foil),
+            {"qty": 0, "name": name, "set": set_code, "num": num, "foil": foil})
+        entry["qty"] += qty
     if not cards:
         sys.exit(f"No cards found in {src}")
-    return cards
+    return sorted(cards.values(), key=_printing_sort_key)
+
+
+def group_by_name(entries: list[dict]) -> dict[str, list[dict]]:
+    """{lowercased name: its printings} — the name-level view of a parsed card
+    list, for the questions where any printing will do ("do I own this?").
+    """
+    by_name: dict[str, list[dict]] = {}
+    for e in entries:
+        by_name.setdefault(e["name"].lower(), []).append(e)
+    return by_name
 
 
 def create_collection(out_dir: Path, list_path: str, force: bool = False) -> None:
     """--collection: build the collection file from a card-list export. The
-    output is deliberately plain — a short header and one 'N Card Name' per
-    line, alphabetical — so it stays easy to eyeball, diff and hand-edit. Any
-    extra structure (precon sections, value tables, notes) is yours to add
-    afterwards; the parser ignores everything that isn't a card line.
+    output is deliberately plain — a short header and one card per line,
+    alphabetical — so it stays easy to eyeball, diff and hand-edit. Whatever
+    printing detail the export carried is written through: `(SET) number` pins
+    and ✨ foil markers, one line per printing, which is what lets
+    --collection-value price the exact cards in your box. Any extra structure
+    (precon sections, value tables, notes) is yours to add afterwards; the
+    parser ignores everything that isn't a card line.
 
     Refuses to clobber a collection that already lists cards unless forced,
     because that file is hand-curated and not reproducible from the export.
@@ -825,9 +874,10 @@ def create_collection(out_dir: Path, list_path: str, force: bool = False) -> Non
             f"python mtg_deck_importer.py --merge-collection \"{list_path}\"\n"
             f"  • to replace it wholesale (loses any notes/sections you added): "
             f"add --force")
-    listing = "\n".join(f"{qty} {disp}"
-                        for _key, (qty, disp) in sorted(cards.items()))
-    copies = sum(qty for qty, _ in cards.values())
+    listing = "\n".join(format_card_line(e) for e in cards)
+    unique = len(group_by_name(cards))
+    copies = sum(e["qty"] for e in cards)
+    pinned = sum(1 for e in cards if e["set"] and e["num"])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"""---
 tags: [mtg, collection]
@@ -840,14 +890,19 @@ project: "{PROJECT_LINK}"
 **Project:** {PROJECT_LINK}
 
 One card per line as `N Card Name`. Only those lines are read — add headings or
-notes anywhere you like and they'll be ignored.
+notes anywhere you like and they'll be ignored. `(SET) 123` pins the exact
+printing owned and ✨ marks it foil, so the value figures price your actual
+cards; a card owned in several printings gets a line each.
 
 {listing}
 """, encoding="utf-8")
     replaced = " (replaced)" if state == COLL_READY else ""
     print(f"Collection: wrote {path}{replaced}")
-    print(f"           {len(cards)} unique cards ({copies} copies) "
+    print(f"           {unique} unique cards ({copies} copies) "
           f"from {Path(list_path).name}")
+    print(f"           {pinned} of {len(cards)} lines pinned to an exact "
+          f"printing" + (f", {sum(1 for e in cards if e['foil'])} foil"
+                         if any(e["foil"] for e in cards) else ""))
     refresh_collection_value(out_dir)
     print("Tip:       run --recheck to rebuild every deck's buy lists against it.")
 
@@ -857,9 +912,13 @@ def merge_collection(out_dir: Path, list_path: str) -> None:
     _Collection.md and append what's missing. Append-only — nothing is ever
     removed; cards present in the collection but absent from the new list are
     reported (as prose the parser ignores) for you to prune by hand.
+
+    Ownership is judged by name — any printing of a card you own is that card —
+    but the lines appended keep the export's `(SET) number` and ✨, so merged
+    cards stay priceable at the printing you actually have.
     """
     src = Path(list_path)
-    new_cards = read_card_list(list_path)  # key -> [qty, display name]
+    new_cards = group_by_name(read_card_list(list_path))
 
     collection = load_collection(out_dir)
     owned = collection[1] if collection else {}
@@ -871,17 +930,29 @@ def merge_collection(out_dir: Path, list_path: str) -> None:
             parsed = parse_card_line(line)
             if parsed and re.match(r"\d", line.strip()):
                 display.setdefault(parsed[1].lower(), parsed[1])
-    additions = []  # (display, qty to add)
-    increases = covered = 0
-    for key, (qty, disp) in sorted(new_cards.items()):
+    additions: list[str] = []  # formatted card lines
+    new_names = increases = covered = 0
+    for key, printings in sorted(new_cards.items()):
+        qty = sum(e["qty"] for e in printings)
         have = owned.get(key, 0)
-        if have <= 0:
-            additions.append((disp, qty))
-        elif qty > have:
-            additions.append((disp, qty - have))
-            increases += 1
-        else:
+        if qty <= have:
             covered += 1
+            continue
+        if have <= 0:
+            new_names += 1
+        else:
+            increases += 1
+        # Only the shortfall is appended, taken printing by printing so each
+        # added copy still says which version it is. Which printings the copies
+        # you already had were is unknowable from a name-level count, so the
+        # export's own order decides.
+        short = qty - have
+        for e in printings:
+            take = min(short, e["qty"])
+            if take <= 0:
+                break
+            additions.append(format_card_line({**e, "qty": take}))
+            short -= take
     only_current = sorted(
         k for k in owned
         if k not in new_cards and k not in BASIC_LAND_NAMES
@@ -891,7 +962,7 @@ def merge_collection(out_dir: Path, list_path: str) -> None:
     today = date.today().isoformat()
     section = [f"\n## 📦 Merged from {src.name} ({today})", ""]
     if additions:
-        section.extend(f"{qty} {disp}" for disp, qty in additions)
+        section.extend(additions)
     else:
         section.append("Nothing new — the collection already covered this list.")
     if only_current:
@@ -904,9 +975,10 @@ def merge_collection(out_dir: Path, list_path: str) -> None:
         f.write("\n".join(section))
 
     print(f"Merged:    {src.name} -> {coll_file.name}")
-    print(f"           new cards: {len(additions) - increases}"
+    print(f"           new cards: {new_names}"
           f" | quantity top-ups: {increases}"
-          f" | already covered: {covered}")
+          f" | already covered: {covered}"
+          f" | lines added: {len(additions)}")
     if only_current:
         print(f"           in collection only: {len(only_current)}"
               " (kept — listed in the new section for manual review)")
@@ -3750,7 +3822,8 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
         image_url = fetch_commander_art(primary, image_path)
 
     if own:
-        if add_deck_to_collection(out_dir, deck["name"], decklist):
+        if add_deck_to_collection(out_dir, deck["name"], decklist,
+                                  deck.get("pins")):
             print(f"Collection: deck added to {collection_path(out_dir).name}")
         else:
             print(f"Collection: already lists '{deck['name']}' — nothing added")

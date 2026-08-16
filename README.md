@@ -155,17 +155,27 @@ anywhere around the list and are ignored:
 
 Anything that isn't a card line is ignored, so notes like this are fine.
 
-1 Sol Ring
-3 Lightning Bolt
+1 Sol Ring (LTC) 284
+3 Lightning Bolt (2X2) 117
+1 Lightning Bolt (2X2) 117 ✨
 23 Mountain
 ```
 
-Point `--collection` at any card-list export and it writes the file for you: duplicate rows
-merged (exports split one card across printings — those are all still copies you own), set
-codes and `*F*` foil markers stripped, sorted alphabetically. Already have one?
-`--collection` **won't overwrite it** — it's hand-curated and not reproducible from an
-export, so use `--merge-collection`, which appends only genuinely new cards under a dated
-heading and never deletes anything.
+A bare `N Card Name` is always enough. Where a line goes further — `(SET) number` pinning
+the printing, `✨` (or `*F*`) marking it foil — the extra detail is kept and used:
+`--collection-value` prices that exact version, and a foil is often several times its
+non-foil twin. Ownership itself is always judged by name, so a pin never stops a card
+counting towards a deck.
+
+Point `--collection` at any card-list export and it writes the file for you, **carrying the
+export's printing detail through**: one line per distinct printing (a card you own in three
+sets gets three lines, foils separated from non-foils), identical rows merged, sorted by
+name then printing. A scanner export whose ids come off the physical cards therefore
+rebuilds a fully-priceable collection. Already have one? `--collection` **won't overwrite
+it** — it's hand-curated and not reproducible from an export, so use `--merge-collection`,
+which appends only genuinely new cards under a dated heading and never deletes anything.
+Merged lines keep their printings too; ownership is compared by name, and only the shortfall
+is appended.
 
 With a collection in place every deck note gains a cost-to-finish line and two 🛒 **Cards to
 Complete** sections — one at the deck's own printings, one at the cheapest ones — each with a
@@ -395,7 +405,7 @@ flag too.
 | **Import** | |
 | `<source>` | Import into a **new** deck note. Refuses to clobber an existing note for the same deck. |
 | `--force <source>` | Regenerate an **existing** note in place, keeping everything you've written in it. |
-| `--own <source>` | Append the whole deck to your collection as owned, *then* compare. For when you actually buy a wishlist precon. Usually paired with `--force`. |
+| `--own <source>` | Append the whole deck to your collection as owned, *then* compare. Keeps the deck's `(SET) number` pins, so the precon lands in the collection at the printings it ships. For when you actually buy a wishlist precon. Usually paired with `--force`. |
 | **Refresh** | |
 | `--recheck [id]` | Full re-import from the original source: deck edits, fresh prices, gallery, and both Cards-to-Complete sections. Art is reused unless the commander changed. Unreachable source → falls back to re-pricing the list stored in the note, so a run never stops. |
 | `--reimport [id]` | Deck list and art only, **no new prices**. Leaves all price, buy and Cheapest Build sections untouched. Flags any deck whose list changed so you know to `--recheck` it. |
@@ -406,8 +416,8 @@ flag too.
 | `--index` | Rebuild `_Decks.md` from the notes' current frontmatter. No network. (Also runs after every import and recheck.) |
 | `--colorize` | One-shot backfill: append each deck's commander colour identity (⚪🔵⚫🔴🟢) to its note filename, `deck-name` and title, rewriting wiki-links to the renamed notes. New imports don't need it — they get the suffix at creation. Idempotent. |
 | **Collection** | |
-| `--collection <file>` | **Create** the collection file from an export. Refuses to overwrite a populated collection unless you add `--force`. |
-| `--merge-collection <file>` | **Add to** an existing collection — append-only. Cards missing from the export are only *reported*, never deleted. |
+| `--collection <file>` | **Create** the collection file from an export, one line per printing with `(SET) number` and ✨ carried through. Refuses to overwrite a populated collection unless you add `--force`. |
+| `--merge-collection <file>` | **Add to** an existing collection — append-only, printings kept. Cards missing from the export are only *reported*, never deleted. |
 | `--collection-value` | Price your collection and write a 💰 Collection Value block at the top of the file. Uses the exact printing and the foil price wherever a line records them. Basics excluded. Runs automatically after the two above. |
 | **Sets** | |
 | `--set` | *(no argument)* Refresh **every** checklist you have — re-price, tick anything new, keep your ticks. The everyday command. |
