@@ -1,6 +1,6 @@
 ---
 name: deck-guide
-description: Analyse one of James's MTG deck notes and write a tailored strategy guide into its 🧭 Deck Guide section. Invoke with a deck id (see the _Decks.md index) or a commander/deck name, e.g. /deck-guide 3 or /deck-guide krenko.
+description: Analyse one of James's MTG deck notes and write a tailored strategy guide into its 🧭 Deck Guide section — card roles, a deck-specific mulligan/opening-hand guide (what to keep, what to ship), play pattern, win conditions, rules traps, bracket, budget swaps and upgrades. Invoke with a deck id (see the _Decks.md index) or a commander/deck name, e.g. /deck-guide 3 or /deck-guide krenko.
 ---
 
 # Deck Guide writer
@@ -32,6 +32,9 @@ or the importer script — this skill works from any session.
 - The note itself: full deck list, Cards to Complete / buy data, prices,
   what James has already written in the review sections (never contradict or
   overwrite his own notes — reference them if relevant).
+- `## 📊 Deck Shape` — computed type counts and the mana-curve table. This is
+  the factual basis for the mulligan guide's keep rule; don't eyeball the curve
+  when the note has already counted it.
 - `_Collection.md` context is already reflected in the note's owned counts.
 - Use your Magic knowledge for card roles and interactions. If unsure about a
   specific card's exact text, check Scryfall
@@ -114,19 +117,26 @@ colourless {C} as ◇.
    Threats & wincons, ### 🏞️ Lands …). Counts per category. One-line notes
    only where a card is non-obvious; plain lists where it isn't. The
    categories should teach how the deck is shaped.
-2. **🎮 Play pattern** — turns 1–2 / 3–4 / 5+ and how the deck closes out;
+2. **✋ Mulligan guide** — what a keepable opening hand looks like for THIS deck. **Derive it from the list, never generalise:** the note's `## 📊 Deck Shape` section already gives you the type counts and the `| Mana value |` curve table — use them, plus the land and ramp counts from your own §1 role breakdown; read the curve to see the turn the deck wants to be doing something; note which colour pips the early plays demand; and identify the two or three cards the deck genuinely needs to function versus the ones that are luxuries. Cover, as `####` sub-blocks or a tight list:
+   - **The keep rule** — the land range to keep on seven, and how it tightens on six, stated as real numbers derived from this deck's land count and curve, with the reasoning in one line (a 38-land deck with a 2-drop commander keeps differently from a 32-land deck with rocks).
+   - **✅ Snap-keeps** — two or three example hands built from cards actually in this list, each with a one-line "why this is fine".
+   - **❌ Auto-mulligans** — the specific shapes that lose *with this deck*: name the trap (all lands and no early play, colour-screwed off a heavy pip, engine pieces with no mana to cast them, a hand that does nothing before turn 5).
+   - **🎯 What you're digging for** — the named cards worth keeping a marginal hand to cast, and the ones that look exciting but are win-more (not worth keeping a bad hand for).
+   - **👑 Commander dependence** — whether the deck can function without casting the commander on curve. This changes what a keep is: a deck that needs its commander keeps hands that cast it, a deck that merely likes it can keep on generic value.
+   Gloss the **London mulligan** on first use — draw a fresh seven each time, then put one card on the bottom per mulligan taken, so a "mulligan to five" is seven cards with two bottomed. Be concrete throughout: name cards, give numbers. No "keep a balanced hand" filler.
+3. **🎮 Play pattern** — turns 1–2 / 3–4 / 5+ and how the deck closes out;
    name the actual cards in each phase. Sequencing specific to THIS list (what
    to play first, what to hold), not generic Commander advice.
-3. **🏆 Win conditions** — numbered, primary first, naming exact cards. Say
+4. **🏆 Win conditions** — numbered, primary first, naming exact cards. Say
    plainly if the deck has no fast kill and wins on attrition. List every
    piece of any infinite combo explicitly. This block replaces the standalone
    🏆 Win Conditions section you deleted, so it has to stand on its own.
-4. **⚠️ Warnings & non-obvious interactions** — numbered; rules traps,
+5. **⚠️ Warnings & non-obvious interactions** — numbered; rules traps,
    anti-synergies, table-politics warnings (mark salt with ⚠️). Rules-TRUE
    only: if you are unsure a ruling is right, check Scryfall or leave it out.
-5. **✅ Bracket justification** — Game Changer count, mass land denial,
+6. **✅ Bracket justification** — Game Changer count, mass land denial,
    extra turns, two-card infinites, tutor count; state the bracket it fits.
-6. **💰 Budget notes** — use the note's own price data; GBP-first (James is
+7. **💰 Budget notes** — use the note's own price data; GBP-first (James is
    UK — recommend Cardmarket/Magic Madhouse, warn about US shipping); name
    the expensive cards and what to cut to hit a lower budget.
    **Always include a cheaper-alternatives table** for the deck's priciest
@@ -138,7 +148,7 @@ colourless {C} as ◇.
    flag when a swap also changes the bracket (e.g. cutting a Game Changer).
    For a deck James already fully owns, frame it as "which cards could move
    to another deck and what would slot in here" rather than a buy decision.
-7. **📈 Upgrade path** — ordered next-buys toward the bracket above.
+8. **📈 Upgrade path** — ordered next-buys toward the bracket above.
 
 ## Voice
 
@@ -150,7 +160,7 @@ magazine article.
 ## Afterwards
 
 Tell James the guide is in, with a 2–3 sentence summary of the deck's plan
-and the one warning he most needs to know. Say which of the three analysis
+and the one warning he most needs to know, plus **the keep rule in one line** ("keep 3–5 lands with a turn-2 play") so he has the mulligan heuristic without opening the note. Say which of the three analysis
 stubs you removed, and name any you left in place because they already had
 prose. Do not run the importer.
 
