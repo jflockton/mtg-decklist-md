@@ -777,6 +777,15 @@ def collection_path(out_dir: Path) -> Path:
     return _env_path(custom) if custom else out_dir / "_Collection.md"
 
 
+def _collection_link(name: str) -> str:
+    """Wiki-link to the collection note, for prose in generated notes. A
+    backticked path renders fine but creates no backlink and rots silently on a
+    rename; Obsidian resolves by basename, so the stem alone survives the note
+    being moved or given a sort prefix.
+    """
+    return f"[[{Path(name).stem}]]"
+
+
 def add_deck_to_collection(out_dir: Path, deck_name: str,
                            decklist: list[tuple[int, str]],
                            pins: dict[str, dict] | None = None) -> bool:
@@ -2523,7 +2532,7 @@ project: "{PROJECT_LINK}"
 
 Every printing has its own line, because a different art is a different card to own — {len(printings)} printings across {distinct} distinct cards. Foil and non-foil share a line: they share a collector number, so they're the same slot. Lines marked *(foil only)* exist in no other finish.
 
-**To tick a box:** record the card in `_Collection.md` with its id — `1 Sol Ring (FIC) 357` — and the matching box ticks itself on the next `--set`. Or tick it here by hand; ticks are never removed by a refresh.
+**To tick a box:** record the card in {_collection_link(collection_path(out_dir).name)} with its id — `1 Sol Ring (FIC) 357` — and the matching box ticks itself on the next `--set`. Or tick it here by hand; ticks are never removed by a refresh.
 
 {added_line} {by_id} newly matched by id, {by_name} by name (cards with only one printing), {already} already ticked before this run.{warn}
 
@@ -2631,7 +2640,7 @@ def render_buy_section(buy: dict, collection_name: str, rates: dict | None,
     deck's own versions: one table with 🛒 rows (missing, dearest first) and
     ✅ rows (owned, off the totals), plus a copy-paste Buy List.
     """
-    summary = (f"Compared against `{collection_name}` — you own "
+    summary = (f"Compared against {_collection_link(collection_name)} — you own "
                f"**{buy['owned_unique']}/{buy['unique']}** cards "
                f"({buy['owned_copies']}/{buy['total_copies']} copies).")
     if not buy["missing"]:
