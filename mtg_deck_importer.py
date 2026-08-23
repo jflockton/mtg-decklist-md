@@ -113,7 +113,10 @@ NAME_DECORATIONS = re.compile(r"\s*(\*[A-Za-z]\*|\([A-Z0-9]{2,6}\)\s*[\w-]*)\s*$
 # and needs its own marker. ✨ is the friendly one to type; *F* is what Moxfield
 # and most exports emit. Both are accepted, anywhere on the line.
 FOIL_MARKER = re.compile(r"\s*(?:\*[A-Za-z]\*|✨)\s*")
-SET_SUFFIX = re.compile(r"\s*\(([A-Za-z0-9]{2,6})\)\s*([\w-]*)\s*$")
+# Collector numbers are not just digits: promos and variants use ★ and †
+# (e.g. New Phyrexia's `73★`) — leaving them out glues the whole `(SET) 73★`
+# suffix onto the card name, which then matches nothing.
+SET_SUFFIX = re.compile(r"\s*\(([A-Za-z0-9]{2,6})\)\s*([\w★†-]*)\s*$")
 # Archidekt exports end lines with a hand-authored role tag — `… [Removal]`.
 # Card names never contain square brackets, so a trailing [] is always a tag.
 CATEGORY_SUFFIX = re.compile(r"\s*\[([^\[\]]+)\]\s*$")
