@@ -32,6 +32,11 @@ or the importer script — this skill works from any session.
 - The note itself: full deck list, Cards to Complete / buy data, prices,
   what James has already written in the review sections (never contradict or
   overwrite his own notes — reference them if relevant).
+- ⚠️ Deck notes run 800+ lines and a single Read will truncate. The price
+  data you want for the budget block — 💸 Cheapest Build and 🛒 Cards to
+  Complete — Cheapest Build — are the **last two sections**. Page to the end
+  or jump straight to them; don't build budget figures from the first buy
+  table you happen to hit on the way down.
 - `## 📊 Deck Shape` — computed type counts and the mana-curve table. This is
   the factual basis for the mulligan guide's keep rule; don't eyeball the curve
   when the note has already counted it.
@@ -139,13 +144,30 @@ colourless {C} as ◇.
 7. **💰 Budget notes** — use the note's own price data; GBP-first (James is
    UK — recommend Cardmarket/Magic Madhouse, warn about US shipping); name
    the expensive cards and what to cut to hit a lower budget.
+
+   ⚠️ **Price everything off `## 🛒 Cards to Complete — Cheapest Build`, the
+   note's last section.** The importer already does this work: that table is
+   dearest-first, one ≈ GBP figure per card, cheapest-printing basis, missing
+   cards only — so it's the bill he'll actually pay and an owned card can't
+   leak in as a phantom saving. Its total is `buy-cheapest-gbp`. Don't build
+   budget figures from the earlier 🛒 Cards to Complete (deck's own printings,
+   15–20% dearer) — quote that one only if you explicitly label it.
+
    **Always include a cheaper-alternatives table** for the deck's priciest
    cards (roughly anything over ~£4, and certainly the top handful that
    dominate the bill): `| Cut | ≈ saved | Replace with | ≈ cost |`, where
    each replacement is a *functional* substitute — same job, honest note on
    what's lost — not just any cheap card. Verify replacement prices against
-   Scryfall (or the note's own price table if the card is in the deck) and
-   flag when a swap also changes the bracket (e.g. cutting a Game Changer).
+   Scryfall (`prices.eur` on the cheapest non-digital printing, converted at
+   the note's own EUR→GBP rate) and flag when a swap also changes the
+   bracket (e.g. cutting a Game Changer).
+
+   **Do the sum before you state a total.** `≈ saved` is that table's price
+   for the cut card minus the replacement's; the column must add up to the
+   drop you claim, i.e. `buy-cheapest-gbp − Σsaved = the "down to ≈ £X"
+   figure`. Quote the total saving as well as the end price so the arithmetic
+   is checkable at a glance.
+
    For a deck James already fully owns, frame it as "which cards could move
    to another deck and what would slot in here" rather than a buy decision.
 8. **📈 Upgrade path** — ordered next-buys toward the bracket above.
