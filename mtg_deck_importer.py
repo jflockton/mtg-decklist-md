@@ -3485,20 +3485,38 @@ def _deck_files(out_dir: Path, deck_id: int, note: Path) -> list[Path]:
 
 
 def _remap_briefs(out_dir: Path, moves: list[tuple[int, int]]) -> None:
-    """Rename analysis briefs to match renumbered decks (their filename is
-    prefixed with the deck id). Best-effort — briefs are a regenerable cache,
-    so any hiccup is ignored rather than aborting the reindex.
+    """Rename analysis briefs to match renumbered decks — both the id prefix in
+    the filename and the "[id]" in the title line, so the two can't drift apart
+    across renumberings. Two-phase (stage under temp names, then settle) so a
+    chain like 2→3, 3→4 can't pick the same file up twice. Best-effort — briefs
+    are a regenerable cache, so any hiccup is ignored rather than aborting the
+    reindex.
     """
     briefs = out_dir / BRIEFS_DIR
     if not briefs.is_dir():
         return
+    staged: list[tuple[Path, Path, int, int]] = []
     for old, new in moves:
         for src in briefs.glob(f"{old:02d} - *.md"):
             dest = src.with_name(f"{new:02d} - {src.name.split(' - ', 1)[1]}")
+            tmp = src.with_name(".remap~" + dest.name)
             try:
-                src.replace(dest)
+                src.replace(tmp)
             except OSError:
-                pass
+                continue
+            staged.append((tmp, dest, old, new))
+    for tmp, dest, old, new in staged:
+        try:
+            text = tmp.read_text(encoding="utf-8")
+            tmp.write_text(text.replace(f"# Analysis brief — [{old}] ",
+                                        f"# Analysis brief — [{new}] ", 1),
+                           encoding="utf-8")
+        except OSError:
+            pass
+        try:
+            tmp.replace(dest)
+        except OSError:
+            pass
 
 
 def delete_deck(out_dir: Path, deck_id: int, assume_yes: bool = False) -> bool:
