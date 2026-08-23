@@ -182,6 +182,51 @@ def read_collection_entries(path: Path) -> list[dict]:
     return entries
 
 
+def collection_db_path() -> Path | None:
+    """The CardVault inventory DB (COLLECTION_DB in .env), or None when the
+    collection lives in the markdown file. When set, the DB is the source of
+    truth for what's owned and _Collection.md becomes a generated mirror of it.
+    """
+    custom = os.environ.get("COLLECTION_DB")
+    return _env_path(custom) if custom else None
+
+
+def _inventory_entries(db_path: Path) -> list[dict]:
+    """The CardVault inventory as collection entries — the same {qty, name,
+    set, num, foil} shape read_collection_entries produces, so everything
+    downstream (ownership counts, collection value, set checklists) works the
+    same whichever source is configured. Foil and etched finishes both count
+    as ✨ — etched is priced at the foil price, the closest market figure
+    there is.
+    """
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        rows = con.execute(
+            "SELECT name, set_code, collector_number, finish, quantity "
+            "FROM inventory WHERE quantity > 0").fetchall()
+    finally:
+        con.close()
+    cards: dict[tuple, dict] = {}
+    for name, set_code, num, finish, qty in rows:
+        foil = finish != "nonfoil"
+        e = cards.setdefault(
+            (name.lower(), set_code.lower(), num, foil),
+            {"qty": 0, "name": name, "set": set_code.lower(), "num": num,
+             "foil": foil})
+        e["qty"] += qty
+    return sorted(cards.values(), key=_printing_sort_key)
+
+
+def collection_entries(out_dir: Path) -> list[dict]:
+    """Every owned printing, from whichever source is configured: the
+    CardVault DB when COLLECTION_DB is set, the markdown collection otherwise.
+    """
+    db = collection_db_path()
+    if db:
+        return _inventory_entries(db) if db.is_file() else []
+    return read_collection_entries(collection_path(out_dir))
+
+
 def parse_card_line(line: str) -> tuple[int, str] | None:
     """(quantity, name) — the printing-agnostic view used everywhere a card is
     just a card (deck lists, ownership counts, price lookups).
@@ -195,7 +240,20 @@ def load_collection(out_dir: Path) -> tuple[str, dict[str, int]] | None:
     COLLECTION_FILE in .env). Only 'N Card Name' lines count — headings,
     prose, and blank lines are ignored, so the file can be a normal note.
     Returns (file name, {lowercased name: owned qty}) or None if absent.
+
+    With COLLECTION_DB set, ownership comes straight from the CardVault
+    inventory instead and the markdown file is never consulted — a missing DB
+    reads as no collection rather than silently falling back to a stale file.
     """
+    db = collection_db_path()
+    if db:
+        if not db.is_file():
+            return None
+        owned: dict[str, int] = {}
+        for e in _inventory_entries(db):
+            key = e["name"].lower()
+            owned[key] = owned.get(key, 0) + e["qty"]
+        return db.name, owned
     path = collection_path(out_dir)
     if not path.is_file():
         return None
@@ -220,7 +278,7 @@ def collection_state(out_dir: Path) -> tuple[str, Path, dict[str, int]]:
     """(state, path, owned cards) — the one place that decides whether there is
     a usable collection to compare decks against.
     """
-    path = collection_path(out_dir)
+    path = collection_db_path() or collection_path(out_dir)
     loaded = load_collection(out_dir)
     if loaded is None:
         return COLL_MISSING, path, {}
@@ -238,13 +296,23 @@ def report_collection_state(out_dir: Path, consequence: str) -> dict[str, int]:
         copies = sum(owned.values())
         print(f"Collection: {path.name} — {len(owned)} unique cards "
               f"({copies} copies)")
+        if collection_db_path():
+            sync_collection_note(out_dir, quiet=True)
         return owned
-    why = (f"no collection file at {path}" if state == COLL_MISSING
-           else f"{path.name} has no 'N Card Name' lines yet")
+    if collection_db_path():
+        why = (f"COLLECTION_DB points at {path} but no file is there"
+               if state == COLL_MISSING
+               else f"{path.name} has no cards in its inventory yet")
+        fix = ("check the COLLECTION_DB path in .env, or scan some cards "
+               "into CardVault")
+    else:
+        why = (f"no collection file at {path}" if state == COLL_MISSING
+               else f"{path.name} has no 'N Card Name' lines yet")
+        fix = ("python mtg_deck_importer.py --collection \"your-cards.txt\"  "
+               "(or create the file by hand)")
     print(f"Collection: ⚠️  {why}")
     print(f"           → {consequence}")
-    print("           → to fix: python mtg_deck_importer.py --collection "
-          "\"your-cards.txt\"  (or create the file by hand)")
+    print(f"           → to fix: {fix}")
     return {}
 
 
@@ -810,6 +878,94 @@ def add_deck_to_collection(out_dir: Path, deck_name: str,
     return True
 
 
+def add_deck_to_inventory(out_dir: Path, deck_name: str,
+                          decklist: list[tuple[int, str]],
+                          pins: dict[str, dict] | None = None) -> bool:
+    """--own against the CardVault DB: put every card in the deck into the
+    app's inventory — at the deck's pinned printing where it has one, the
+    newest printing in the reference DB otherwise — and record the deck in
+    CardVault's decks table with its cards. That decks row doubles as the
+    guard that stops a second --own of the same deck double-counting copies.
+    Returns True when the deck was added.
+    """
+    db_path = collection_db_path()
+    ref = scryfall_db()
+    if ref is None:
+        print("Collection: ⚠️ --own needs the Scryfall reference DB to "
+              "resolve printings\n"
+              "           into CardVault rows — re-run without --no-bulk. "
+              "Nothing was added.")
+        return False
+    con = sqlite3.connect(db_path, timeout=15)
+    try:
+        if con.execute("SELECT 1 FROM decks WHERE name = ? COLLATE NOCASE",
+                       (deck_name,)).fetchone():
+            print(f"Collection: CardVault already has a deck named "
+                  f"'{deck_name}' — nothing added")
+            return False
+        cols = ("id, name, set_code, collector_number, rarity, type_line, "
+                "image_uri")
+        resolved, unresolved = [], []
+        for qty, name in decklist:
+            pin = (pins or {}).get(name.lower()) or {}
+            card = None
+            if pin.get("set") and pin.get("num"):
+                card = ref.execute(
+                    f"SELECT {cols} FROM cards WHERE set_code = ? AND "
+                    "collector_number = ?",
+                    (pin["set"], pin["num"])).fetchone()
+            if card is None:
+                card = ref.execute(
+                    f"SELECT {cols} FROM cards WHERE name = ? COLLATE NOCASE "
+                    "ORDER BY released_at DESC LIMIT 1", (name,)).fetchone()
+            if card is None:  # deck lists sometimes carry a DFC's front face
+                card = ref.execute(
+                    f"SELECT {cols} FROM cards WHERE face_name = ? COLLATE "
+                    "NOCASE ORDER BY released_at DESC LIMIT 1",
+                    (name,)).fetchone()
+            if card is None:
+                unresolved.append(name)
+                continue
+            resolved.append(
+                (card, qty, "foil" if pin.get("foil") else "nonfoil"))
+        if not resolved:
+            print("Collection: ⚠️ no card in the deck could be resolved to a "
+                  "printing — nothing added to CardVault")
+            return False
+        with con:
+            deck_row = con.execute(
+                "INSERT INTO decks (name, format, notes) VALUES "
+                "(?, 'commander', ?)",
+                (deck_name,
+                 f"Added by mtg_deck_importer --own {date.today().isoformat()}"
+                 )).lastrowid
+            for card, qty, finish in resolved:
+                con.execute(
+                    "INSERT INTO inventory (scryfall_id, name, set_code, "
+                    "collector_number, rarity, type_line, finish, quantity, "
+                    "image_uri) VALUES (?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(scryfall_id, finish) DO UPDATE SET "
+                    "quantity = quantity + excluded.quantity, "
+                    "updated_at = datetime('now')",
+                    (card["id"], card["name"], card["set_code"],
+                     card["collector_number"], card["rarity"],
+                     card["type_line"], finish, qty, card["image_uri"]))
+                con.execute(
+                    "INSERT OR IGNORE INTO deck_cards (deck_id, scryfall_id, "
+                    "name, quantity) VALUES (?,?,?,?)",
+                    (deck_row, card["id"], card["name"], qty))
+    finally:
+        con.close()
+    copies = sum(qty for _c, qty, _f in resolved)
+    print(f"Collection: {copies} copies across {len(resolved)} printings "
+          f"added to {db_path.name}, plus a '{deck_name}' deck entry")
+    if unresolved:
+        print(f"           ⚠️ {len(unresolved)} card(s) not in the reference "
+              "DB, add them in the app: " + ", ".join(unresolved[:10])
+              + ("…" if len(unresolved) > 10 else ""))
+    return True
+
+
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 
 
@@ -873,6 +1029,7 @@ def create_collection(out_dir: Path, list_path: str, force: bool = False) -> Non
     Refuses to clobber a collection that already lists cards unless forced,
     because that file is hand-curated and not reproducible from the export.
     """
+    _refuse_in_db_mode("--collection")
     cards = read_card_list(list_path)
     path = collection_path(out_dir)
     state, _, existing = collection_state(out_dir)
@@ -916,6 +1073,128 @@ cards; a card owned in several printings gets a line each.
     print("Tip:       run --recheck to rebuild every deck's buy lists against it.")
 
 
+def _refuse_in_db_mode(flag: str) -> None:
+    """The file-editing collection commands make no sense once CardVault owns
+    the data — an edit to the note would be overwritten by the next mirror,
+    which is exactly the silent divergence this mode exists to end.
+    """
+    if collection_db_path():
+        sys.exit(
+            f"{flag} edits the collection file, but the collection is backed "
+            "by CardVault\n"
+            f"(COLLECTION_DB in .env). Add cards by scanning them into the "
+            "app instead —\n"
+            "the vault note mirrors the DB automatically. To go back to a "
+            "file-based\n"
+            "collection, remove COLLECTION_DB from .env.")
+
+
+CARDVAULT_SECTION = "## 🗃️ Cards (from CardVault)"
+
+
+def sync_collection_note(out_dir: Path, quiet: bool = False) -> None:
+    """Mirror the CardVault inventory into _Collection.md so the vault note
+    always shows what the DB knows. Only the generated listing section is
+    replaced on later runs — the 💰 Collection Value block and any sections
+    you add by hand survive. Converting a file-era note for the first time
+    backs the old file up into imports/ (as .md.bak, so Obsidian ignores it)
+    and lists every card the old note had that CardVault doesn't, so nothing
+    silently stops counting as owned.
+    """
+    db = collection_db_path()
+    if not db or not db.is_file():
+        return
+    entries = _inventory_entries(db)
+    unique = len(group_by_name(entries))
+    copies = sum(e["qty"] for e in entries)
+    today = date.today().isoformat()
+    section = (f"{CARDVAULT_SECTION}\n\n"
+               f"*Mirrored from `{db.name}` {today} — {unique} unique cards, "
+               f"{copies} copies, every line pinned to its exact printing. "
+               "Don't edit this section: add or remove cards in CardVault and "
+               "it rewrites itself on the next run.*\n\n"
+               + "\n".join(format_card_line(e) for e in entries) + "\n")
+
+    path = collection_path(out_dir)
+    old = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
+    if CARDVAULT_SECTION in old:
+        new = re.sub(
+            rf"{re.escape(CARDVAULT_SECTION)}\n.*?(?=\n## |\Z)",
+            lambda _m: section, old, count=1, flags=re.S)
+        new = re.sub(r"^updated: .*$", f"updated: {today}", new,
+                     count=1, flags=re.M)
+        if new != old:
+            path.write_text(new, encoding="utf-8", newline="\n")
+            if not quiet:
+                print(f"Mirror:    {path.name} refreshed from {db.name}")
+        elif not quiet:
+            print(f"Mirror:    {path.name} already matches {db.name}")
+        return
+
+    # First conversion of a file-era note: keep its value block, report what
+    # it listed that the DB doesn't, and park the old file out of the way.
+    value_block = ""
+    missing_note = ""
+    if old:
+        m = re.search(r"## 💰 Collection Value[^\n]*\n.*?(?=\n## |\Z)",
+                      old, re.S)
+        if m:
+            value_block = m.group(0).rstrip("\n") + "\n\n"
+        old_owned: dict[str, int] = {}
+        display: dict[str, str] = {}
+        for line in old.splitlines():
+            if re.match(r"\d", line.strip()):
+                parsed = parse_card_line(line)
+                if parsed:
+                    key = parsed[1].lower()
+                    old_owned[key] = old_owned.get(key, 0) + parsed[0]
+                    display.setdefault(key, parsed[1])
+        db_owned: dict[str, int] = {}
+        for e in entries:
+            key = e["name"].lower()
+            db_owned[key] = db_owned.get(key, 0) + e["qty"]
+        missing = sorted(
+            k for k, q in old_owned.items()
+            if db_owned.get(k, 0) < q and k not in BASIC_LAND_NAMES
+            and not k.startswith("snow-covered "))
+        if missing:
+            missing_note = _callout(
+                f"⚠️ In the old collection note but not (fully) in CardVault "
+                f"({len(missing)})",
+                "Scan or add these in the app if you still own them — the "
+                "importer no longer counts them:\n\n"
+                + ", ".join(display[k] for k in missing)) + "\n\n"
+            if not quiet:
+                print(f"Mirror:    ⚠️ {len(missing)} card(s) from the old "
+                      f"{path.name} aren't in CardVault — listed in the note "
+                      "for review")
+        backup_dir = out_dir / "imports"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup = backup_dir / f"_Collection pre-CardVault {today}.md.bak"
+        backup.write_text(old, encoding="utf-8", newline="\n")
+        if not quiet:
+            print(f"Mirror:    old {path.name} backed up to "
+                  f"imports/{backup.name}")
+
+    path.write_text(f"""---
+tags: [mtg, collection]
+updated: {today}
+source: cardvault
+project: "{PROJECT_LINK}"
+---
+
+# 🗃️ My Card Collection
+
+**Project:** {PROJECT_LINK}
+
+Owned cards, mirrored from CardVault's `{db.name}` (`COLLECTION_DB` in the importer's `.env`). **CardVault is the source of truth** — the importer reads ownership straight from the DB and rewrites this note to match, so add or remove cards in the app, not here. `(SET) 123` pins the exact printing owned and ✨ marks a foil (or etched) copy. Anything you write outside the mirrored section is kept.
+
+{value_block}{missing_note}{section}""", encoding="utf-8", newline="\n")
+    if not quiet:
+        print(f"Mirror:    wrote {path.name} from {db.name} "
+              f"({unique} unique cards, {copies} copies)")
+
+
 def merge_collection(out_dir: Path, list_path: str) -> None:
     """--merge-collection: diff a full owned-cards export against
     _Collection.md and append what's missing. Append-only — nothing is ever
@@ -926,6 +1205,7 @@ def merge_collection(out_dir: Path, list_path: str) -> None:
     but the lines appended keep the export's `(SET) number` and ✨, so merged
     cards stay priceable at the printing you actually have.
     """
+    _refuse_in_db_mode("--merge-collection")
     src = Path(list_path)
     new_cards = group_by_name(read_card_list(list_path))
 
@@ -1003,12 +1283,20 @@ def collection_value(out_dir: Path, quiet: bool = False) -> None:
     """
     state, path, owned = collection_state(out_dir)
     if state != COLL_READY:
+        if collection_db_path():
+            why = ("No CardVault inventory DB at" if state == COLL_MISSING
+                   else "No cards in the inventory yet at")
+            sys.exit(f"{why} {path}\n"
+                     "There is nothing to price without it. Check the "
+                     "COLLECTION_DB path in .env, or scan some cards into "
+                     "CardVault.")
         why = ("No collection file at" if state == COLL_MISSING
                else "No 'N Card Name' lines yet in")
         sys.exit(f"{why} {path}\n"
                  "There is nothing to price without it. Create one from a card "
                  "export with:\n"
                  "  python mtg_deck_importer.py --collection \"your-cards.txt\"")
+    sync_collection_note(out_dir, quiet=True)  # no-op in file mode
     fname = path.name
     names = [n for n in owned
              if n not in BASIC_LAND_NAMES and not n.startswith("snow-covered ")]
@@ -1018,7 +1306,7 @@ def collection_value(out_dir: Path, quiet: bool = False) -> None:
     # one, and the foil price where it's marked ✨ — a foil is often several
     # times its non-foil twin, so pricing everything non-foil undervalues a
     # collection badly.
-    entries = [e for e in read_collection_entries(path)
+    entries = [e for e in collection_entries(out_dir)
                if e["name"].lower() not in BASIC_LAND_NAMES
                and not e["name"].lower().startswith("snow-covered ")]
     pinned = [e for e in entries if e["set"] and e["num"]]
@@ -2406,11 +2694,10 @@ def set_collection(out_dir: Path, codes: list[str], label: str | None = None,
         note = out_dir / f"_Collection - {safe}.md"
     ticked = set() if reset else _existing_ticks(note)
 
-    _, coll_path, _owned = collection_state(out_dir)
     owned_ids: set[tuple[str, str]] = set()
     owned_names: set[str] = set()
     owned_foil: set[tuple[str, str]] = set()
-    for e in read_collection_entries(coll_path):
+    for e in collection_entries(out_dir):
         if e["set"] and e["num"]:
             owned_ids.add((e["set"], e["num"]))
             if e["foil"]:
@@ -2532,7 +2819,7 @@ project: "{PROJECT_LINK}"
 
 Every printing has its own line, because a different art is a different card to own — {len(printings)} printings across {distinct} distinct cards. Foil and non-foil share a line: they share a collector number, so they're the same slot. Lines marked *(foil only)* exist in no other finish.
 
-**To tick a box:** record the card in {_collection_link(collection_path(out_dir).name)} with its id — `1 Sol Ring (FIC) 357` — and the matching box ticks itself on the next `--set`. Or tick it here by hand; ticks are never removed by a refresh.
+**To tick a box:** {"scan the card into CardVault" if collection_db_path() else f"record the card in {_collection_link(collection_path(out_dir).name)} with its id — `1 Sol Ring (FIC) 357` —"} and the matching box ticks itself on the next `--set`. Or tick it here by hand; ticks are never removed by a refresh.
 
 {added_line} {by_id} newly matched by id, {by_name} by name (cards with only one printing), {already} already ticked before this run.{warn}
 
@@ -3849,8 +4136,11 @@ def import_deck(source: str, out_dir: Path, *, force: bool, own: bool,
         image_url = fetch_commander_art(primary, image_path)
 
     if own:
-        if add_deck_to_collection(out_dir, deck["name"], decklist,
-                                  deck.get("pins")):
+        if collection_db_path():
+            add_deck_to_inventory(out_dir, deck["name"], decklist,
+                                  deck.get("pins"))  # prints its own outcome
+        elif add_deck_to_collection(out_dir, deck["name"], decklist,
+                                    deck.get("pins")):
             print(f"Collection: deck added to {collection_path(out_dir).name}")
         else:
             print(f"Collection: already lists '{deck['name']}' — nothing added")
@@ -4133,6 +4423,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="diff a full owned-cards export against _Collection.md and "
              "append what's missing (append-only; removals only reported)")
     parser.add_argument(
+        "--sync-collection", action="store_true", dest="sync_collection",
+        help="rewrite _Collection.md's card listing from the CardVault "
+             "inventory DB (needs COLLECTION_DB in .env; also runs "
+             "automatically whenever ownership is read)")
+    parser.add_argument(
         "--brief", nargs="?", const="__all__", default=None, metavar="ID",
         help="write a compact analysis brief per deck (all, or one by ID) "
              "into the vault's _analysis-briefs/ — input for /analyse-deck")
@@ -4257,6 +4552,15 @@ def main() -> None:
             parser.error("--set needs a checklist name, a preset, or set codes.")
         set_collection(out_dir, codes, args.set_label or label,
                        reset=args.set_reset)
+        return
+    if args.sync_collection:
+        if args.source:
+            parser.error("--sync-collection takes no other arguments.")
+        out_dir = resolve_out_dir()
+        if not collection_db_path():
+            sys.exit("--sync-collection mirrors the CardVault DB into the "
+                     "collection note,\nbut COLLECTION_DB isn't set in .env.")
+        sync_collection_note(out_dir)
         return
     if args.collection:
         if args.source:

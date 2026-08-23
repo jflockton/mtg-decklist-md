@@ -63,6 +63,7 @@ that is offline card lookups.
 |---------|:--------:|--------------|
 | `VAULT_OUTPUT_DIR` | ✅ | Folder in your Obsidian vault where notes, `Attachments/` and the index are written. |
 | `COLLECTION_FILE` | — | Path to your owned-cards list. Defaults to `_Collection.md` inside `VAULT_OUTPUT_DIR`. |
+| `COLLECTION_DB` | — | Path to a [CardVault](https://github.com/jflockton/mtg-cardvault) scanner `inventory.db`. When set, that DB is the **source of truth** for what you own — see CardVault mode below. |
 | `MANAPOOL_CONDITION` | — | Minimum card condition for ManaPool prices — affects `--collection-value` only. `any`, `lp` (default) or `nm`. |
 
 A real environment variable overrides `.env`, and `.env` is gitignored — your vault path
@@ -90,7 +91,8 @@ How you actually live with it, month to month:
 1. **Import decks as you find them.** `python mtg_deck_importer.py <url-or-txt>` — each gets
    a note and a stable id.
 2. **Tell it what you own.** `--collection <export>` once, then `--merge-collection <export>`
-   whenever you buy something. This is what turns a deck note into a shopping decision.
+   whenever you buy something — or set `COLLECTION_DB` and just keep scanning cards into
+   CardVault. This is what turns a deck note into a shopping decision.
 3. **Refresh when you're thinking about money.** `--recheck` re-prices every deck, redoes
    every buy list, and flags cards that have crashed since last time.
 4. **Buy from the list.** Each note ends with a copy-paste 📋 Buy List, and a cheaper one
@@ -145,6 +147,19 @@ files meaningfully (`Cloud Limit Break Precon.txt` becomes that deck's name).
 
 The collection file is how the app knows which cards you already own. It lives at
 `_Collection.md` in your output folder (or wherever `COLLECTION_FILE` points).
+
+**CardVault mode.** If you scan your cards with the CardVault app, set `COLLECTION_DB` to its
+`inventory.db` and stop maintaining the file by hand: ownership, `--collection-value` and the
+`--set` checklists all read straight from the DB (every entry pinned to its exact printing,
+foils included), and `_Collection.md` becomes a generated mirror of it — rewritten
+automatically whenever ownership is read, or on demand with `--sync-collection`, so the
+Obsidian note and its wiki-links stay alive. The 💰 value block and anything you write outside
+the mirrored section survive the rewrite. In this mode `--collection` and
+`--merge-collection` are disabled (scan cards into the app instead), and `--own` writes the
+deck **into the DB**: inventory quantities at the deck's pinned printings, plus a deck entry
+in CardVault itself. The first sync backs your old file up to `imports/` and flags any card
+it listed that the DB doesn't, so nothing silently stops counting as owned. A missing DB
+reads as *no collection* — it never falls back silently to a stale file.
 
 **The format is one card per line, `N Card Name` — the same as a deck list.** That's the
 whole spec. Only lines starting with a digit are read, so headings, notes and tables can sit
@@ -405,7 +420,7 @@ flag too.
 | **Import** | |
 | `<source>` | Import into a **new** deck note. Refuses to clobber an existing note for the same deck. |
 | `--force <source>` | Regenerate an **existing** note in place, keeping everything you've written in it. |
-| `--own <source>` | Append the whole deck to your collection as owned, *then* compare. Keeps the deck's `(SET) number` pins, so the precon lands in the collection at the printings it ships. For when you actually buy a wishlist precon. Usually paired with `--force`. |
+| `--own <source>` | Append the whole deck to your collection as owned, *then* compare. Keeps the deck's `(SET) number` pins, so the precon lands in the collection at the printings it ships. In CardVault mode the cards go into the inventory DB, plus a deck entry in the app. For when you actually buy a wishlist precon. Usually paired with `--force`. |
 | **Refresh** | |
 | `--recheck [id]` | Full re-import from the original source: deck edits, fresh prices, gallery, and both Cards-to-Complete sections. Art is reused unless the commander changed. Unreachable source → falls back to re-pricing the list stored in the note, so a run never stops. |
 | `--reimport [id]` | Deck list and art only, **no new prices**. Leaves all price, buy and Cheapest Build sections untouched. Flags any deck whose list changed so you know to `--recheck` it. |
@@ -416,8 +431,9 @@ flag too.
 | `--index` | Rebuild `_Decks.md` from the notes' current frontmatter. No network. (Also runs after every import and recheck.) |
 | `--colorize` | One-shot backfill: append each deck's commander colour identity (⚪🔵⚫🔴🟢) to its note filename, `deck-name` and title, rewriting wiki-links to the renamed notes. New imports don't need it — they get the suffix at creation. Idempotent. |
 | **Collection** | |
-| `--collection <file>` | **Create** the collection file from an export, one line per printing with `(SET) number` and ✨ carried through. Refuses to overwrite a populated collection unless you add `--force`. |
-| `--merge-collection <file>` | **Add to** an existing collection — append-only, printings kept. Cards missing from the export are only *reported*, never deleted. |
+| `--collection <file>` | **Create** the collection file from an export, one line per printing with `(SET) number` and ✨ carried through. Refuses to overwrite a populated collection unless you add `--force`. Disabled in CardVault mode. |
+| `--merge-collection <file>` | **Add to** an existing collection — append-only, printings kept. Cards missing from the export are only *reported*, never deleted. Disabled in CardVault mode. |
+| `--sync-collection` | CardVault mode only: rewrite `_Collection.md`'s card listing from the inventory DB now. Also happens automatically whenever ownership is read. |
 | `--collection-value` | Price your collection and write a 💰 Collection Value block at the top of the file. Uses the exact printing and the foil price wherever a line records them. Basics excluded. Runs automatically after the two above. |
 | **Sets** | |
 | `--set` | *(no argument)* Refresh **every** checklist you have — re-price, tick anything new, keep your ticks. The everyday command. |
