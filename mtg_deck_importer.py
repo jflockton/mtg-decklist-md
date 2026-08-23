@@ -296,8 +296,6 @@ def report_collection_state(out_dir: Path, consequence: str) -> dict[str, int]:
         copies = sum(owned.values())
         print(f"Collection: {path.name} — {len(owned)} unique cards "
               f"({copies} copies)")
-        if collection_db_path():
-            sync_collection_note(out_dir, quiet=True)
         return owned
     if collection_db_path():
         why = (f"COLLECTION_DB points at {path} but no file is there"
@@ -850,7 +848,13 @@ def _collection_link(name: str) -> str:
     backticked path renders fine but creates no backlink and rots silently on a
     rename; Obsidian resolves by basename, so the stem alone survives the note
     being moved or given a sort prefix.
+
+    In CardVault mode there is no collection note to link — ownership lives in
+    the app's DB — so the prose names the DB instead of linking anything.
     """
+    db = collection_db_path()
+    if db:
+        return f"your CardVault inventory (`{db.name}`)"
     return f"[[{Path(name).stem}]]"
 
 
@@ -1083,116 +1087,9 @@ def _refuse_in_db_mode(flag: str) -> None:
             f"{flag} edits the collection file, but the collection is backed "
             "by CardVault\n"
             f"(COLLECTION_DB in .env). Add cards by scanning them into the "
-            "app instead —\n"
-            "the vault note mirrors the DB automatically. To go back to a "
-            "file-based\n"
-            "collection, remove COLLECTION_DB from .env.")
-
-
-CARDVAULT_SECTION = "## 🗃️ Cards (from CardVault)"
-
-
-def sync_collection_note(out_dir: Path, quiet: bool = False) -> None:
-    """Mirror the CardVault inventory into _Collection.md so the vault note
-    always shows what the DB knows. Only the generated listing section is
-    replaced on later runs — the 💰 Collection Value block and any sections
-    you add by hand survive. Converting a file-era note for the first time
-    backs the old file up into imports/ (as .md.bak, so Obsidian ignores it)
-    and lists every card the old note had that CardVault doesn't, so nothing
-    silently stops counting as owned.
-    """
-    db = collection_db_path()
-    if not db or not db.is_file():
-        return
-    entries = _inventory_entries(db)
-    unique = len(group_by_name(entries))
-    copies = sum(e["qty"] for e in entries)
-    today = date.today().isoformat()
-    section = (f"{CARDVAULT_SECTION}\n\n"
-               f"*Mirrored from `{db.name}` {today} — {unique} unique cards, "
-               f"{copies} copies, every line pinned to its exact printing. "
-               "Don't edit this section: add or remove cards in CardVault and "
-               "it rewrites itself on the next run.*\n\n"
-               + "\n".join(format_card_line(e) for e in entries) + "\n")
-
-    path = collection_path(out_dir)
-    old = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
-    if CARDVAULT_SECTION in old:
-        new = re.sub(
-            rf"{re.escape(CARDVAULT_SECTION)}\n.*?(?=\n## |\Z)",
-            lambda _m: section, old, count=1, flags=re.S)
-        new = re.sub(r"^updated: .*$", f"updated: {today}", new,
-                     count=1, flags=re.M)
-        if new != old:
-            path.write_text(new, encoding="utf-8", newline="\n")
-            if not quiet:
-                print(f"Mirror:    {path.name} refreshed from {db.name}")
-        elif not quiet:
-            print(f"Mirror:    {path.name} already matches {db.name}")
-        return
-
-    # First conversion of a file-era note: keep its value block, report what
-    # it listed that the DB doesn't, and park the old file out of the way.
-    value_block = ""
-    missing_note = ""
-    if old:
-        m = re.search(r"## 💰 Collection Value[^\n]*\n.*?(?=\n## |\Z)",
-                      old, re.S)
-        if m:
-            value_block = m.group(0).rstrip("\n") + "\n\n"
-        old_owned: dict[str, int] = {}
-        display: dict[str, str] = {}
-        for line in old.splitlines():
-            if re.match(r"\d", line.strip()):
-                parsed = parse_card_line(line)
-                if parsed:
-                    key = parsed[1].lower()
-                    old_owned[key] = old_owned.get(key, 0) + parsed[0]
-                    display.setdefault(key, parsed[1])
-        db_owned: dict[str, int] = {}
-        for e in entries:
-            key = e["name"].lower()
-            db_owned[key] = db_owned.get(key, 0) + e["qty"]
-        missing = sorted(
-            k for k, q in old_owned.items()
-            if db_owned.get(k, 0) < q and k not in BASIC_LAND_NAMES
-            and not k.startswith("snow-covered "))
-        if missing:
-            missing_note = _callout(
-                f"⚠️ In the old collection note but not (fully) in CardVault "
-                f"({len(missing)})",
-                "Scan or add these in the app if you still own them — the "
-                "importer no longer counts them:\n\n"
-                + ", ".join(display[k] for k in missing)) + "\n\n"
-            if not quiet:
-                print(f"Mirror:    ⚠️ {len(missing)} card(s) from the old "
-                      f"{path.name} aren't in CardVault — listed in the note "
-                      "for review")
-        backup_dir = out_dir / "imports"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        backup = backup_dir / f"_Collection pre-CardVault {today}.md.bak"
-        backup.write_text(old, encoding="utf-8", newline="\n")
-        if not quiet:
-            print(f"Mirror:    old {path.name} backed up to "
-                  f"imports/{backup.name}")
-
-    path.write_text(f"""---
-tags: [mtg, collection]
-updated: {today}
-source: cardvault
-project: "{PROJECT_LINK}"
----
-
-# 🗃️ My Card Collection
-
-**Project:** {PROJECT_LINK}
-
-Owned cards, mirrored from CardVault's `{db.name}` (`COLLECTION_DB` in the importer's `.env`). **CardVault is the source of truth** — the importer reads ownership straight from the DB and rewrites this note to match, so add or remove cards in the app, not here. `(SET) 123` pins the exact printing owned and ✨ marks a foil (or etched) copy. Anything you write outside the mirrored section is kept.
-
-{value_block}{missing_note}{section}""", encoding="utf-8", newline="\n")
-    if not quiet:
-        print(f"Mirror:    wrote {path.name} from {db.name} "
-              f"({unique} unique cards, {copies} copies)")
+            "app instead.\n"
+            "To go back to a file-based collection, remove COLLECTION_DB "
+            "from .env.")
 
 
 def merge_collection(out_dir: Path, list_path: str) -> None:
@@ -1296,7 +1193,6 @@ def collection_value(out_dir: Path, quiet: bool = False) -> None:
                  "There is nothing to price without it. Create one from a card "
                  "export with:\n"
                  "  python mtg_deck_importer.py --collection \"your-cards.txt\"")
-    sync_collection_note(out_dir, quiet=True)  # no-op in file mode
     fname = path.name
     names = [n for n in owned
              if n not in BASIC_LAND_NAMES and not n.startswith("snow-covered ")]
@@ -1384,34 +1280,45 @@ def collection_value(out_dir: Path, quiet: bool = False) -> None:
 
 {_callout("📋 Top 20", _rows_table(rows[:20]))}{unpriced_note}
 """
-    path = collection_path(out_dir)
-    text = path.read_text(encoding="utf-8-sig")
-    # Drop any previous block wherever it sat, then place the fresh one at the
-    # top — the total is the thing you want to see on opening the note, not
-    # something to scroll 400 card lines to reach.
-    text = re.sub(r"\n*## 💰 Collection Value[^\n]*\n.*?(?=\n## |\Z)", "",
-                  text, count=1, flags=re.S)
-    m = re.search(r"^## ", text, re.M)
-    body = section.rstrip("\n")
-    if m:
-        head = text[:m.start()].rstrip("\n")
-        text = f"{head}\n\n{body}\n\n{text[m.start():]}"
-    else:
-        text = text.rstrip("\n") + "\n\n" + body + "\n"
-    path.write_text(re.sub(r"\n{3,}", "\n\n", text), encoding="utf-8",
-                    newline="\n")
-
     gbp = f" / GBP {totals['eur'] * rates['eur_gbp']:,.2f}" if rates else ""
-    if quiet:  # auto-refresh after an import — one line is enough
-        print(f"Value:     collection now ~EUR {totals['eur']:,.2f}{gbp}"
-              f" ({path.name} updated)")
+    if not collection_db_path():
+        # File mode: the value block lives at the top of the collection note.
+        # In CardVault mode there is no collection note — the report is
+        # console-only, and the DB itself stays the app's to write.
+        path = collection_path(out_dir)
+        text = path.read_text(encoding="utf-8-sig")
+        # Drop any previous block wherever it sat, then place the fresh one at
+        # the top — the total is the thing you want to see on opening the
+        # note, not something to scroll 400 card lines to reach.
+        text = re.sub(r"\n*## 💰 Collection Value[^\n]*\n.*?(?=\n## |\Z)", "",
+                      text, count=1, flags=re.S)
+        m = re.search(r"^## ", text, re.M)
+        body = section.rstrip("\n")
+        if m:
+            head = text[:m.start()].rstrip("\n")
+            text = f"{head}\n\n{body}\n\n{text[m.start():]}"
+        else:
+            text = text.rstrip("\n") + "\n\n" + body + "\n"
+        path.write_text(re.sub(r"\n{3,}", "\n\n", text), encoding="utf-8",
+                        newline="\n")
+        if quiet:  # auto-refresh after an import — one line is enough
+            print(f"Value:     collection now ~EUR {totals['eur']:,.2f}{gbp}"
+                  f" ({path.name} updated)")
+            return
+    elif quiet:
+        print(f"Value:     collection now ~EUR {totals['eur']:,.2f}{gbp}")
         return
     print(f"Value:     ~EUR {totals['eur']:,.2f}{gbp}"
           f" / USD {totals['usd']:,.2f} / MP USD {totals['mp']:,.2f}")
     for q, d, e, _ in rows[:5]:
         print(f"           {d}{f' ×{q}' if q > 1 else ''}"
               f" — ~EUR {(e or 0) * q:,.2f}")
-    print(f"Updated:   💰 Collection Value at the top of {path.name}")
+    if collection_db_path():
+        print(f"           ({len(rows)} of {len(entries)} non-basic entries "
+              f"priced, {copies} copies)")
+    else:
+        print(f"Updated:   💰 Collection Value at the top of "
+              f"{collection_path(out_dir).name}")
 
 
 def refresh_collection_value(out_dir: Path) -> None:
@@ -4423,11 +4330,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="diff a full owned-cards export against _Collection.md and "
              "append what's missing (append-only; removals only reported)")
     parser.add_argument(
-        "--sync-collection", action="store_true", dest="sync_collection",
-        help="rewrite _Collection.md's card listing from the CardVault "
-             "inventory DB (needs COLLECTION_DB in .env; also runs "
-             "automatically whenever ownership is read)")
-    parser.add_argument(
         "--brief", nargs="?", const="__all__", default=None, metavar="ID",
         help="write a compact analysis brief per deck (all, or one by ID) "
              "into the vault's _analysis-briefs/ — input for /analyse-deck")
@@ -4552,15 +4454,6 @@ def main() -> None:
             parser.error("--set needs a checklist name, a preset, or set codes.")
         set_collection(out_dir, codes, args.set_label or label,
                        reset=args.set_reset)
-        return
-    if args.sync_collection:
-        if args.source:
-            parser.error("--sync-collection takes no other arguments.")
-        out_dir = resolve_out_dir()
-        if not collection_db_path():
-            sys.exit("--sync-collection mirrors the CardVault DB into the "
-                     "collection note,\nbut COLLECTION_DB isn't set in .env.")
-        sync_collection_note(out_dir)
         return
     if args.collection:
         if args.source:

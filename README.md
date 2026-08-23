@@ -149,17 +149,15 @@ The collection file is how the app knows which cards you already own. It lives a
 `_Collection.md` in your output folder (or wherever `COLLECTION_FILE` points).
 
 **CardVault mode.** If you scan your cards with the CardVault app, set `COLLECTION_DB` to its
-`inventory.db` and stop maintaining the file by hand: ownership, `--collection-value` and the
+`inventory.db` and skip the collection file entirely: ownership, `--collection-value` and the
 `--set` checklists all read straight from the DB (every entry pinned to its exact printing,
-foils included), and `_Collection.md` becomes a generated mirror of it — rewritten
-automatically whenever ownership is read, or on demand with `--sync-collection`, so the
-Obsidian note and its wiki-links stay alive. The 💰 value block and anything you write outside
-the mirrored section survive the rewrite. In this mode `--collection` and
-`--merge-collection` are disabled (scan cards into the app instead), and `--own` writes the
-deck **into the DB**: inventory quantities at the deck's pinned printings, plus a deck entry
-in CardVault itself. The first sync backs your old file up to `imports/` and flags any card
-it listed that the DB doesn't, so nothing silently stops counting as owned. A missing DB
-reads as *no collection* — it never falls back silently to a stale file.
+foils included), so scanning a card into the app is all it takes for the importer to know
+you own it. There is no `_Collection.md` in this mode — deck notes say "your CardVault
+inventory" instead of linking a note, and `--collection-value` prints its report to the
+console rather than writing a value block. `--collection` and `--merge-collection` are
+disabled (scan cards into the app instead), and `--own` writes the deck **into the DB**:
+inventory quantities at the deck's pinned printings, plus a deck entry in CardVault itself.
+A missing DB reads as *no collection* — it never falls back silently to a stale file.
 
 **The format is one card per line, `N Card Name` — the same as a deck list.** That's the
 whole spec. Only lines starting with a digit are read, so headings, notes and tables can sit
@@ -433,8 +431,7 @@ flag too.
 | **Collection** | |
 | `--collection <file>` | **Create** the collection file from an export, one line per printing with `(SET) number` and ✨ carried through. Refuses to overwrite a populated collection unless you add `--force`. Disabled in CardVault mode. |
 | `--merge-collection <file>` | **Add to** an existing collection — append-only, printings kept. Cards missing from the export are only *reported*, never deleted. Disabled in CardVault mode. |
-| `--sync-collection` | CardVault mode only: rewrite `_Collection.md`'s card listing from the inventory DB now. Also happens automatically whenever ownership is read. |
-| `--collection-value` | Price your collection and write a 💰 Collection Value block at the top of the file. Uses the exact printing and the foil price wherever a line records them. Basics excluded. Runs automatically after the two above. |
+| `--collection-value` | Price your collection and write a 💰 Collection Value block at the top of the file (console-only in CardVault mode). Uses the exact printing and the foil price wherever a line records them. Basics excluded. Runs automatically after the two above. |
 | **Sets** | |
 | `--set` | *(no argument)* Refresh **every** checklist you have — re-price, tick anything new, keep your ticks. The everyday command. |
 | `--set <what>` | A checklist's name (`--set "Final Fantasy"`), a preset (`ff`, `marvel`, `spiderman`), or raw Scryfall set codes (`fin,fic`). |
